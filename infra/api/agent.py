@@ -330,21 +330,20 @@ def _retrieve(
         return [], None
 
 
-# An "unclassified anomaly" = the classifier says normal, but the health monitor
-# flags the window AND it is genuinely impulsive - the signature of a one-off
-# impact. ``kurtosis`` is excess kurtosis (~0 for a clean signal), so requiring
-# impulsiveness keeps a healthy signal from ever being flagged, regardless of how
-# (over-) confident the classifier is. We do NOT gate on classifier confidence: it
-# cannot classify isolated impacts, so its confidence is meaningless here.
+# An "unclassified anomaly" = the classifier says normal, but the window is
+# genuinely impulsive - the signature of a one-off impact. ``kurtosis`` is excess
+# kurtosis (~0 for a clean signal), so this never false-positives on healthy data.
+# Keyed on impulsiveness ALONE on purpose: it must work even when the health
+# autoencoder is untrained/missing, and the classifier's confidence is meaningless
+# here (it cannot classify isolated impacts). The health monitor, when available,
+# is reported as extra evidence but is NOT required to raise the flag.
 _KURTOSIS_ANOMALY = 1.5
 _CREST_ANOMALY = 5.0
 
 
-def _is_unclassified_anomaly(
-    analysis: dict[str, Any], health: dict[str, Any] | None
-) -> bool:
-    """True only for a genuinely impulsive anomaly the classifier cannot name."""
-    if analysis["condition"] != "normal" or not (health and health.get("caught")):
+def _is_unclassified_anomaly(analysis: dict[str, Any]) -> bool:
+    """True for a genuinely impulsive anomaly the classifier cannot name."""
+    if analysis["condition"] != "normal":
         return False
     feat = analysis["features"]
     return (
@@ -355,21 +354,19 @@ def _is_unclassified_anomaly(
 
 def _resolve_condition(
     analysis: dict[str, Any],
-    health: dict[str, Any] | None,
     expected_condition: str | None,
 ) -> tuple[str, bool]:
     """Decide the reported condition and whether it's an unclassified anomaly.
 
     When the caller supplies a known ground-truth fault (the Fault Lab generated
     this exact fault, or "normal" for the healthy baseline), trust it. Otherwise
-    use the classifier, promoting a "normal" result to an unclassified anomaly only
-    when the health monitor AND impulsiveness corroborate it - so a clean healthy
-    signal is never flagged just because the autoencoder is miscalibrated.
+    use the classifier, promoting a "normal" result to an unclassified anomaly when
+    the signal is genuinely impulsive (a clean healthy signal never is).
     """
     if expected_condition in config.CONDITIONS:
         return expected_condition, False
     cond = analysis["condition"]
-    return cond, _is_unclassified_anomaly(analysis, health)
+    return cond, _is_unclassified_anomaly(analysis)
 
 
 def _confidence_for(
@@ -435,7 +432,7 @@ def diagnose(
     sig, rpm, fs = _resolve_signal(sample_id, signal, rpm, fs)
     analysis = _analyze(sig, fs, rpm)
     health = analysis["health"]
-    cond, unclassified = _resolve_condition(analysis, health, expected_condition)
+    cond, unclassified = _resolve_condition(analysis, expected_condition)
     confidence = _confidence_for(analysis, cond, health, unclassified)
 
     docs, _score = _retrieve(cond, unclassified)
@@ -523,7 +520,7 @@ def run_agent(
     analysis = _analyze(sig, fs, rpm)
     classifier_cond, conf = analysis["condition"], analysis["confidence"]
     health = analysis["health"]
-    cond, unclassified = _resolve_condition(analysis, health, expected_condition)
+    cond, unclassified = _resolve_condition(analysis, expected_condition)
     analyze_detail = (
         f"Classified {_label(classifier_cond)} ({conf:.0%}) over "
         f"{analysis['n_windows']} windows"

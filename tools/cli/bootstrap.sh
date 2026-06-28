@@ -23,6 +23,7 @@ case "$ENV" in
     API_URL="http://localhost:8000"
     FRONT_URL="http://localhost:3000"
     DB_PORT=5432
+    KAFKA_PORT=9092
     ;;
   prod)
     POD="foreshock-prod-pod"
@@ -30,6 +31,7 @@ case "$ENV" in
     API_URL="http://localhost:15000"
     FRONT_URL="http://localhost:18080"
     DB_PORT=15432
+    KAFKA_PORT=19092
     ;;
   *)
     echo "usage: $(basename "$0") [dev|prod]" >&2
@@ -147,8 +149,23 @@ else
   warn "Seeding failed (retry later: podman exec $API python /app/scripts/seed_kb.py)"
 fi
 
+# --- 6) detection self-test --------------------------------------------------
+# Confirm the AI actually catches injected faults (Custom impulses + a generated
+# fault) using the local detection path. Best-effort: prints PASS/FAIL with the
+# key numbers and never blocks the bring-up.
+log "Self-testing fault detection"
+SELFTEST="$(podman exec "$API" python /app/scripts/selftest_detect.py 2>&1 || true)"
+printf '%s\n' "$SELFTEST"
+if printf '%s' "$SELFTEST" | grep -q "selftest: PASS"; then
+  ok "Fault detection self-test passed."
+else
+  warn "Fault detection self-test did not pass. Retrain the models with:"
+  warn "  rm -f models/model.joblib models/samples.npz models/health.npz models/health_ae.joblib"
+  warn "  tools/cli/bootstrap.sh $ENV"
+fi
+
 # --- done ---------------------------------------------------------------------
 log "Up"
 podman pod ps --filter "name=$POD" 2>/dev/null || true
 printf '\n%sFrontend:%s %s\n%sAPI:%s      %s\n' "$C_OK" "$C_OFF" "$FRONT_URL" "$C_OK" "$C_OFF" "$API_URL"
-printf 'Diagnostics tab needs the KB + Ollama; Live tab needs the v3 stream producer.\n'
+printf 'Live tab: start the feed with  podman exec %s env KAFKA_BOOTSTRAP=localhost:%s python /app/scripts/stream_producer.py\n' "$API" "$KAFKA_PORT"
