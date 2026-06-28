@@ -23,7 +23,12 @@ spec:
     # PostgreSQL + pgvector. infra/database is the init dir (schema on first start).
     - name: postgres-db
       image: docker.io/pgvector/pgvector:pg16
+      # hostNetwork binds this port directly on the host, so 5432 would collide
+      # with any host PostgreSQL. Listen on 15432 instead; clients use DB_PORT.
+      args: ["postgres", "-c", "port=15432"]
       env:
+        - name: PGPORT                 # keep psql/pg_isready + first-init in sync
+          value: "15432"
         - name: POSTGRES_USER
           value: postgres
         # TODO: change this and the matching DB_PASSWORD before any non-local deploy.
@@ -47,15 +52,15 @@ spec:
         - name: KAFKA_PROCESS_ROLES
           value: broker,controller
         - name: KAFKA_LISTENERS
-          value: PLAINTEXT://localhost:9092,CONTROLLER://localhost:9093
+          value: PLAINTEXT://localhost:19092,CONTROLLER://localhost:19093
         - name: KAFKA_ADVERTISED_LISTENERS
-          value: PLAINTEXT://localhost:9092
+          value: PLAINTEXT://localhost:19092
         - name: KAFKA_CONTROLLER_LISTENER_NAMES
           value: CONTROLLER
         - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
           value: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
         - name: KAFKA_CONTROLLER_QUORUM_VOTERS
-          value: "1@localhost:9093"
+          value: "1@localhost:19093"
         - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
           value: "1"
         - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
@@ -70,7 +75,8 @@ spec:
     # no-op on later starts). Tuned to stay light on a CPU box: one request at a
     # time and models kept warm so there is no per-request reload.
     # ~3 GB RAM with llama3.2:1b + nomic-embed-text - comfortable on a 4c/32 GB host.
-    # NOTE: hostNetwork binds 11434 on the host; stop any host `ollama serve` first.
+    # NOTE: hostNetwork binds this on the host; we use 21434 (non-default) so it
+    # won't clash with a host `ollama serve` on 11434.
     - name: ollama
       image: docker.io/ollama/ollama:latest
       command: ["/bin/sh"]
@@ -79,7 +85,7 @@ spec:
         - "ollama serve & srv=$!; until ollama list >/dev/null 2>&1; do sleep 1; done; ollama pull \"$LLM_MODEL\"; ollama pull \"$EMBED_MODEL\"; wait $srv"
       env:
         - name: OLLAMA_HOST            # bind for the server
-          value: 0.0.0.0:11434
+          value: 0.0.0.0:21434
         - name: OLLAMA_KEEP_ALIVE      # keep models resident (no cold reloads)
           value: "24h"
         - name: OLLAMA_MAX_LOADED_MODELS  # chat (1b) + embeddings; both small
@@ -100,18 +106,18 @@ spec:
     - name: foreshock-api
       image: docker.io/python:3.11-slim
       command: ["/bin/sh"]
-      args: ["-c", "cd /app/infra/api && pip install --quiet --no-cache-dir -r requirements.txt && exec gunicorn --bind 0.0.0.0:5000 --workers 2 --timeout 120 --access-logfile - --error-logfile - app:app"]
+      args: ["-c", "cd /app/infra/api && pip install --quiet --no-cache-dir -r requirements.txt && exec gunicorn --bind 0.0.0.0:15000 --workers 2 --timeout 120 --access-logfile - --error-logfile - app:app"]
       env:
         - name: FLASK_ENV
           value: production
         - name: PORT
-          value: "5000"
+          value: "15000"
         - name: PYTHONPATH
           value: /app
         - name: DB_HOST
           value: localhost
         - name: DB_PORT
-          value: "5432"
+          value: "15432"
         - name: DB_NAME
           value: foreshock
         - name: DB_USER
@@ -121,13 +127,13 @@ spec:
           value: CHANGE-ME-postgres-password
         # hostNetwork: the API reaches the in-pod ollama container on localhost.
         - name: OLLAMA_HOST
-          value: http://localhost:11434
+          value: http://localhost:21434
         - name: LLM_MODEL
           value: llama3.2:1b
         - name: EMBED_MODEL
           value: nomic-embed-text
         - name: KAFKA_BOOTSTRAP
-          value: localhost:9092
+          value: localhost:19092
       volumeMounts:
         - name: project-root
           mountPath: /app
@@ -136,17 +142,17 @@ spec:
           mountPath: /etc/resolv.conf
           readOnly: true
 
-    # React Frontend - build then serve static files on port 80. The built app
+    # React Frontend - build then serve static files on port 18080. The built app
     # calls /api on the same origin; cloudflared routes /api/* to the API.
     - name: foreshock-frontend
       image: docker.io/node:20-alpine
       command: ["/bin/sh"]
-      args: ["-c", "cd /app && npm install && npm run build && npx -y serve -s dist -l 80"]
+      args: ["-c", "cd /app && npm install && npm run build && npx -y serve -s dist -l 18080"]
       env:
         - name: HOST
           value: "0.0.0.0"
         - name: PORT
-          value: "80"
+          value: "18080"
       volumeMounts:
         - name: frontend-code
           mountPath: /app

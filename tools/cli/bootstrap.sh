@@ -23,12 +23,14 @@ case "$ENV" in
     MANIFEST="infra/podman/foreshock-dev.yaml"
     API_URL="http://localhost:8000"
     FRONT_URL="http://localhost:3000"
+    DB_PORT=5432
     ;;
   prod)
     POD="foreshock-prod-pod"
     MANIFEST="infra/podman/foreshock-prod.yaml"
-    API_URL="http://localhost:5000"
-    FRONT_URL="http://localhost"
+    API_URL="http://localhost:15000"
+    FRONT_URL="http://localhost:18080"
+    DB_PORT=15432
     ;;
   *)
     echo "usage: $(basename "$0") [dev|prod]" >&2
@@ -93,12 +95,23 @@ podman play kube --replace "$MANIFEST" || die "podman play kube failed"
 # not whether our app db exists (that is ensured below, before seeding).
 log "Waiting for Postgres"
 for _ in $(seq 1 60); do
-  if podman exec "$PG" pg_isready -U postgres -d postgres >/dev/null 2>&1; then
+  if podman exec "$PG" pg_isready -U postgres -d postgres -p "$DB_PORT" >/dev/null 2>&1; then
     ok "Postgres ready."; break
   fi
   printf '.'; sleep 2
 done
-podman exec "$PG" pg_isready -U postgres -d postgres >/dev/null 2>&1 || warn "Postgres not ready (continuing)"
+if ! podman exec "$PG" pg_isready -U postgres -d postgres -p "$DB_PORT" >/dev/null 2>&1; then
+  warn "Postgres not ready (continuing)"
+  # hostNetwork binds Postgres directly on the *host*; a host PostgreSQL service
+  # or a stray container on that port makes our postgres crash-loop with "Address
+  # already in use", while clients silently reach the other server (e.g. a db
+  # without 'foreshock'). Surface that here instead of a confusing silent failure.
+  if podman logs --tail 25 "$PG" 2>&1 | grep -qi "address already in use"; then
+    warn "Port $DB_PORT is already in use on the host (hostNetwork mode)."
+    warn "  find it:  sudo ss -lptn 'sport = :$DB_PORT'"
+    warn "  free it:  stop whatever owns it (e.g. sudo systemctl stop postgresql), then re-run"
+  fi
+fi
 
 # --- 4b) Ollama models --------------------------------------------------------
 LLM="$(podman exec "$OLL" printenv LLM_MODEL 2>/dev/null || echo llama3.2:1b)"
@@ -126,11 +139,11 @@ curl -fsS "$API_URL/health" >/dev/null 2>&1 || warn "API not answering yet at $A
 # 'foreshock' database, so seeding fails with: database "foreshock" does not
 # exist. Create it if missing so re-runs self-heal (the API's migrations then add
 # pgvector + the schema).
-if podman exec "$PG" pg_isready -U postgres -d postgres >/dev/null 2>&1 \
-   && ! podman exec "$PG" psql -U postgres -tAc \
+if podman exec "$PG" pg_isready -U postgres -d postgres -p "$DB_PORT" >/dev/null 2>&1 \
+   && ! podman exec "$PG" psql -U postgres -p "$DB_PORT" -tAc \
         "SELECT 1 FROM pg_database WHERE datname='foreshock'" 2>/dev/null | grep -q 1; then
   warn "Database 'foreshock' missing - creating it"
-  podman exec "$PG" psql -U postgres -c "CREATE DATABASE foreshock" >/dev/null 2>&1 \
+  podman exec "$PG" psql -U postgres -p "$DB_PORT" -c "CREATE DATABASE foreshock" >/dev/null 2>&1 \
     && ok "Database 'foreshock' created." || warn "Could not create 'foreshock' (seeding may fail)"
 fi
 
