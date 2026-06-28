@@ -2,7 +2,9 @@
 #
 # All-in-one Foreshock bring-up via Podman.
 #
-#   tools/cli/bootstrap.sh [dev|prod]      (default: dev)
+#   tools/cli/bootstrap.sh [dev|prod] [reset]   (default: dev)
+#
+#   "reset" deletes the trained health data first so it is rebuilt on this boot.
 #
 # Steps (each is idempotent / safe to re-run):
 #   1. Pre-pull container images with visible progress (first run is ~5 GB).
@@ -15,7 +17,17 @@
 
 set -uo pipefail
 
-ENV="${1:-dev}"
+ENV="dev"
+RESET=0
+for _arg in "$@"; do
+  case "$_arg" in
+    dev|prod) ENV="$_arg" ;;
+    reset|--reset) RESET=1 ;;
+    -h|--help) echo "usage: $(basename "$0") [dev|prod] [reset]"; exit 0 ;;
+    *) echo "usage: $(basename "$0") [dev|prod] [reset]" >&2; exit 1 ;;
+  esac
+done
+
 case "$ENV" in
   dev)
     POD="foreshock-dev-pod"
@@ -56,6 +68,16 @@ PG="${POD}-postgres-db"
 OLL="${POD}-ollama"
 API="${POD}-foreshock-api"
 TRAINER="${POD}-trainer"
+
+# --- reset (optional) ---------------------------------------------------------
+# `reset` wipes the trained health data so the first-boot trainer rebuilds it on
+# this run (handy after changing the health/anomaly model). The classifier is left
+# in place; add models/model.joblib + models/samples.npz below for a full retrain.
+if [ "$RESET" = 1 ]; then
+  log "Reset: clearing trained health data"
+  rm -f models/health.npz models/health_ae.joblib
+  ok "Health data cleared - it will be retrained on this boot."
+fi
 
 # --- 1) images ----------------------------------------------------------------
 # Pre-pull with visible progress so the first run never looks "frozen": these
