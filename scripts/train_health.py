@@ -90,9 +90,14 @@ def _build_ims(test_dir: Path):
     return model, X, errors, phase, "ims"
 
 
-def _build_cwru():
-    """Build a CWRU-derived run-to-failure timeline (healthy block -> fault block)."""
-    print("Using CWRU-derived run-to-failure timeline (no IMS data present).")
+def _cwru_scorer() -> tuple[health.HealthModel, np.ndarray, np.ndarray]:
+    """Train the scoring autoencoder on CWRU healthy windows (+ noise augmentation).
+
+    This is the model that gets SAVED. It scores the bundled CWRU samples and the
+    Fault-Lab windows at request time (the anomaly net + /api/health/sample), so its
+    reconstruction error must be calibrated to *that* data - not IMS, whose scale is
+    different. Returns ``(model, X, labels)`` for reuse by the embedding / timeline.
+    """
     windows, labels, _groups, rpms = data_loader.load_dataset()
     windows = np.asarray(windows)
     labels = np.asarray(labels)
@@ -105,16 +110,22 @@ def _build_cwru():
     aug = _augment_healthy(windows[healthy_mask], rpms[healthy_mask], rng, config.DEFAULT_FS)
     if aug is not None:
         healthy = np.vstack([healthy, aug])
-    model = health.fit_health_model(healthy)
+    return health.fit_health_model(healthy), X, labels
 
-    # Sequence: healthy windows, then an inner-race fault block (one "asset").
-    fault_cond = "inner_race" if "inner_race" in set(labels) else sorted(set(labels) - {"normal"})[0]
+
+def _cwru_timeline(
+    model: health.HealthModel, X: np.ndarray, labels: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """A CWRU-derived run-to-failure timeline (healthy block -> fault block)."""
+    fault_cond = (
+        "inner_race" if "inner_race" in set(labels)
+        else sorted(set(labels) - {"normal"})[0]
+    )
     h = X[labels == "normal"][:_TIMELINE_PER_PHASE]
     f = X[labels == fault_cond][:_TIMELINE_PER_PHASE]
-    timeline_X = np.vstack([h, f])
-    errors = model.errors(timeline_X)
+    errors = model.errors(np.vstack([h, f]))
     phase = np.array(["healthy"] * len(h) + ["fault"] * len(f), dtype=object)
-    return model, X, errors, phase, "cwru", labels
+    return errors, phase
 
 
 def _build_embedding(model: health.HealthModel, X: np.ndarray, labels: np.ndarray):
@@ -134,36 +145,49 @@ def _build_embedding(model: health.HealthModel, X: np.ndarray, labels: np.ndarra
 
 
 def main() -> int:
+    # The SAVED scoring autoencoder is always CWRU-calibrated: it scores the bundled
+    # CWRU samples and Fault-Lab windows at request time (the anomaly net and
+    # /api/health/sample), so its reconstruction error must be meaningful for *that*
+    # data, not for IMS.
+    print("Training the CWRU-calibrated scoring autoencoder ...")
+    scoring_model, X, labels = _cwru_scorer()
+
     ims_dir = ims_loader.available()
     if ims_dir is not None:
-        model, X, errors, phase, source = _build_ims(ims_dir)
-        labels = phase  # IMS embedding uses phase as the label
-        embed_x, embed_y, embed_cond = _build_embedding(model, X, phase)
+        # Real IMS run-to-failure timeline + embedding for the Health tab. These use
+        # an IMS-calibrated model for a meaningful degradation curve, but that model
+        # is NOT saved - only the timeline + threshold it produces go into the npz.
+        timeline_model, ims_X, errors, phase, source = _build_ims(ims_dir)
+        embed_x, embed_y, embed_cond = _build_embedding(timeline_model, ims_X, phase)
+        threshold = float(timeline_model.threshold)
     else:
-        model, X, errors, phase, source, labels = _build_cwru()
-        embed_x, embed_y, embed_cond = _build_embedding(model, X, labels)
+        print("No IMS data present - using a CWRU-derived timeline + embedding.")
+        source = "cwru"
+        errors, phase = _cwru_timeline(scoring_model, X, labels)
+        embed_x, embed_y, embed_cond = _build_embedding(scoring_model, X, labels)
+        threshold = float(scoring_model.threshold)
 
     smooth = _smooth(errors)
-    alarm = _alarm_index(smooth, model.threshold)
+    alarm = _alarm_index(smooth, threshold)
 
-    health.save(model, HEALTH_MODEL_PATH)
+    health.save(scoring_model, HEALTH_MODEL_PATH)
     np.savez_compressed(
         HEALTH_DATA_PATH,
         timeline_error=errors.astype(np.float64),
         timeline_smooth=smooth.astype(np.float64),
         timeline_phase=phase,
-        threshold=np.array(model.threshold),
+        threshold=np.array(threshold),
         alarm_index=np.array(alarm),
         embed_x=embed_x.astype(np.float64),
         embed_y=embed_y.astype(np.float64),
         embed_condition=embed_cond,
         source=np.array(source),
     )
-    print(f"Saved health model to {HEALTH_MODEL_PATH}")
+    print(f"Saved CWRU-calibrated scoring model to {HEALTH_MODEL_PATH}")
     print(
         f"Saved health timeline + embedding to {HEALTH_DATA_PATH} "
-        f"(source={source}, points={errors.shape[0]}, threshold={model.threshold:.4f}, "
-        f"alarm_index={alarm})"
+        f"(timeline source={source}, points={errors.shape[0]}, "
+        f"threshold={threshold:.4f}, alarm_index={alarm})"
     )
     return 0
 
