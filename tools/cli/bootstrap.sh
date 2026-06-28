@@ -89,14 +89,16 @@ log "Starting the $ENV pod ($POD)"
 podman play kube --replace "$MANIFEST" || die "podman play kube failed"
 
 # --- 4a) Postgres -------------------------------------------------------------
+# Probe the always-present 'postgres' db: pg_isready reports *server* readiness,
+# not whether our app db exists (that is ensured below, before seeding).
 log "Waiting for Postgres"
 for _ in $(seq 1 60); do
-  if podman exec "$PG" pg_isready -U postgres -d foreshock >/dev/null 2>&1; then
+  if podman exec "$PG" pg_isready -U postgres -d postgres >/dev/null 2>&1; then
     ok "Postgres ready."; break
   fi
   printf '.'; sleep 2
 done
-podman exec "$PG" pg_isready -U postgres -d foreshock >/dev/null 2>&1 || warn "Postgres not ready (continuing)"
+podman exec "$PG" pg_isready -U postgres -d postgres >/dev/null 2>&1 || warn "Postgres not ready (continuing)"
 
 # --- 4b) Ollama models --------------------------------------------------------
 LLM="$(podman exec "$OLL" printenv LLM_MODEL 2>/dev/null || echo llama3.2:1b)"
@@ -119,6 +121,19 @@ done
 curl -fsS "$API_URL/health" >/dev/null 2>&1 || warn "API not answering yet at $API_URL/health"
 
 # --- 5) seed the knowledge base ----------------------------------------------
+# The Postgres image only creates POSTGRES_DB on a *fresh* data volume; a reused
+# PVC (or an interrupted first init) can leave the server running without the
+# 'foreshock' database, so seeding fails with: database "foreshock" does not
+# exist. Create it if missing so re-runs self-heal (the API's migrations then add
+# pgvector + the schema).
+if podman exec "$PG" pg_isready -U postgres -d postgres >/dev/null 2>&1 \
+   && ! podman exec "$PG" psql -U postgres -tAc \
+        "SELECT 1 FROM pg_database WHERE datname='foreshock'" 2>/dev/null | grep -q 1; then
+  warn "Database 'foreshock' missing - creating it"
+  podman exec "$PG" psql -U postgres -c "CREATE DATABASE foreshock" >/dev/null 2>&1 \
+    && ok "Database 'foreshock' created." || warn "Could not create 'foreshock' (seeding may fail)"
+fi
+
 log "Seeding the RAG knowledge base"
 if podman exec "$API" python /app/scripts/seed_kb.py; then
   ok "Knowledge base seeded."
