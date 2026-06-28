@@ -28,8 +28,9 @@ from src.features import FEATURE_NAMES, extract_features_batch  # noqa: E402
 # Augmented (noisy/scaled) windows generated per class to improve robustness.
 N_AUGMENT_PER_CLASS = 50
 # Synthetic injected faults generated per fault class (periodic impulse trains),
-# so the model catches the kind of fault the Fault Lab generates.
-N_SYNTH_FAULT_PER_CLASS = 60
+# so the model catches the kind of fault the Fault Lab generates. A generous count
+# across a wide severity range teaches it subtle faults too (the ones it misses).
+N_SYNTH_FAULT_PER_CLASS = 120
 
 
 def _augment_from(
@@ -96,7 +97,7 @@ def _synthetic_faults_from(
             [
                 synthetic.fault_window(
                     windows[i], cond, rpm=float(rpms[i]), fs=config.DEFAULT_FS,
-                    severity=float(rng.uniform(0.8, 1.8)), rng=rng,
+                    severity=float(rng.uniform(0.5, 2.5)), rng=rng,
                 )
                 for i in chosen
             ]

@@ -330,15 +330,17 @@ def _retrieve(
         return [], None
 
 
-# Promoting a classifier-"normal" result to an "unclassified anomaly" takes more
-# than the autoencoder firing: it is calibrated to its own training data and can
-# over-fire on in-spec signals (a huge reconstruction error on a healthy sample is
-# exactly that). So we also require the classifier to be unsure AND the signal to
-# be genuinely impulsive - the signature of a one-off impact. ``kurtosis`` here is
-# excess kurtosis (~0 for healthy, well above 0 for impacts).
+# Promoting a classifier-"normal" result to an "unclassified anomaly" needs more
+# than the autoencoder firing (it is calibrated to its own training data and can
+# over-fire). We require genuine impulsiveness - the signature of a one-off impact;
+# ``kurtosis`` here is excess kurtosis (~0 for healthy). A clearly impulsive signal
+# is flagged even when the classifier is confident (it is simply wrong); a mildly
+# impulsive one only when the classifier is also unsure it is healthy.
 _ANOMALY_GATE_CONF = 0.75
-_KURTOSIS_ANOMALY = 2.0
-_CREST_ANOMALY = 6.0
+_KURTOSIS_ANOMALY = 2.0   # mild-impulsiveness floor (below this, never an anomaly)
+_KURTOSIS_STRONG = 3.5    # clearly impulsive -> flag regardless of the classifier
+_CREST_ANOMALY = 5.5
+_CREST_STRONG = 8.0
 
 
 def _is_unclassified_anomaly(
@@ -347,13 +349,14 @@ def _is_unclassified_anomaly(
     """True only for a genuinely impulsive anomaly the classifier cannot name."""
     if analysis["condition"] != "normal" or not (health and health.get("caught")):
         return False
-    if analysis["confidence"] >= _ANOMALY_GATE_CONF:
-        return False  # classifier is confident it is healthy - trust it
     feat = analysis["features"]
-    return (
-        feat.get("kurtosis", 0.0) >= _KURTOSIS_ANOMALY
-        or feat.get("crest_factor", 0.0) >= _CREST_ANOMALY
-    )
+    kurt = feat.get("kurtosis", 0.0)
+    crest = feat.get("crest_factor", 0.0)
+    if kurt < _KURTOSIS_ANOMALY and crest < _CREST_ANOMALY:
+        return False  # not impulsive -> trust healthy (never flag a clean signal)
+    if kurt >= _KURTOSIS_STRONG or crest >= _CREST_STRONG:
+        return True  # clearly impulsive -> an anomaly even if the classifier is sure
+    return analysis["confidence"] < _ANOMALY_GATE_CONF
 
 
 def _resolve_condition(
