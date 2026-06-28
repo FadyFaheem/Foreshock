@@ -22,6 +22,7 @@ const NAV = [
   { label: 'Diagnostics', path: '/diagnostics' },
   { label: 'Health', path: '/health' },
   { label: 'Live', path: '/live' },
+  { label: 'Fault Lab', path: '/fault-lab' },
 ];
 
 // App shell: a top bar with navigation plus a scrollable main area. Foreshock

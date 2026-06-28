@@ -41,7 +41,11 @@ def _conn_kwargs() -> dict[str, Any]:
 def get_pool() -> ThreadedConnectionPool:
     global _pool
     if _pool is None:
-        _pool = ThreadedConnectionPool(minconn=1, maxconn=8, **_conn_kwargs())
+        # The pool is per worker *process*; size it >= gunicorn --threads so
+        # concurrent request threads don't hit "connection pool exhausted".
+        # Default 16 matches the prod --threads; override with DB_POOL_MAX.
+        maxconn = int(os.getenv("DB_POOL_MAX", "16"))
+        _pool = ThreadedConnectionPool(minconn=1, maxconn=maxconn, **_conn_kwargs())
     return _pool
 
 

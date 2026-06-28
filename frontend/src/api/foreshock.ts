@@ -281,6 +281,33 @@ export function runAgent(sampleId: string): Promise<AgentRun> {
   return apiJson<AgentRun>('/api/agent', { method: 'POST', body: form });
 }
 
+export interface InjectDiagnoseResult {
+  agent: AgentRun;
+  injected_points: number[];
+  amplitude: number;
+  // Just the characteristic frequency of the detected fault, for the UI marker.
+  marked_frequency: Record<string, number>;
+  fault_frequencies: Record<string, number>;
+  waveform: { t: number[]; x: number[] };
+  envelope: Series;
+}
+
+// Inject defects into a healthy window, then run the full RAG + LLM agent on the
+// synthesized signal. Powers the Fault Lab page.
+export function injectDiagnose(
+  signal: number[],
+  points: number[],
+  amplitude: number,
+  fs: number,
+  rpm: number,
+  asset?: string,
+): Promise<InjectDiagnoseResult> {
+  return apiJson<InjectDiagnoseResult>('/api/inject/diagnose', {
+    method: 'POST',
+    body: JSON.stringify({ signal, points, amplitude, fs, rpm, asset }),
+  });
+}
+
 export function getObservability(): Promise<Observability> {
   return apiJson<Observability>('/api/observability');
 }

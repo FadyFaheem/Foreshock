@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 
+import numpy as np
 from flask import Blueprint, jsonify, request
 
 import agent
@@ -17,7 +18,8 @@ import llm
 import rag
 from engine import get_engine
 from predict import _parse_upload
-from src import config
+from src import config, synthetic
+from src.features import downsample, envelope_spectrum_for_display
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +85,61 @@ def run_agent():
         return jsonify(agent.run_agent(**args))
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
+
+
+# Condition -> the characteristic envelope frequency that evidences it, so the UI
+# can point out exactly where the fault shows up in the spectrum.
+_FAULT_FREQ_KEY = {
+    "inner_race": "BPFI",
+    "outer_race": "BPFO",
+    "ball": "BSF",
+}
+
+
+@ai_bp.post("/inject/diagnose")
+def inject_diagnose():
+    """Generate a fault, then run the agentic RAG + LLM analysis on it.
+
+    Body: ``{signal: [...], points: [idx...], amplitude, fs, rpm, asset}``. Injects
+    damped impulses into a healthy window at the chosen spots and runs the full
+    agent, so the UI can show the synthesized waveform, the envelope spectrum with
+    the characteristic fault frequency marked, and the grounded diagnosis.
+    """
+    if get_engine() is None:
+        return jsonify(error="Model not loaded. Run scripts/train.py."), 503
+    body = request.get_json(silent=True) or {}
+    sig = np.asarray(body.get("signal") or [], dtype=np.float64).reshape(-1)
+    points = [int(p) for p in (body.get("points") or [])]
+    amplitude = float(body.get("amplitude", 1.0))
+    if sig.shape[0] < config.WINDOW_SIZE:
+        return jsonify(error=f"signal must have >= {config.WINDOW_SIZE} samples"), 400
+    fs = int(body.get("fs", config.DEFAULT_FS))
+    rpm = float(body.get("rpm", config.DEFAULT_RPM))
+    asset = body.get("asset") or "fault-lab-01"
+
+    modified = synthetic.inject_impulses(sig, points, amplitude=amplitude, fs=fs)
+    try:
+        run = agent.run_agent(signal=modified, rpm=rpm, fs=fs, asset=asset)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+
+    t = np.arange(modified.shape[0]) / fs
+    f_env, m_env = envelope_spectrum_for_display(modified, fs)
+    freqs = config.fault_frequencies(rpm)
+    key = _FAULT_FREQ_KEY.get(run["diagnosis"]["condition"])
+    return jsonify(
+        agent=run,
+        injected_points=points,
+        amplitude=amplitude,
+        # Only the detected fault's frequency, so the UI marks the one the AI saw.
+        marked_frequency={key: round(freqs[key], 1)} if key else {},
+        fault_frequencies={k: round(v, 1) for k, v in freqs.items()},
+        waveform={
+            "t": downsample(t, config.WAVEFORM_POINTS).tolist(),
+            "x": downsample(modified, config.WAVEFORM_POINTS).tolist(),
+        },
+        envelope={"f": f_env.tolist(), "mag": m_env.tolist()},
+    )
 
 
 @ai_bp.get("/work_orders")

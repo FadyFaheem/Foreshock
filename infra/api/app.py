@@ -96,4 +96,6 @@ if __name__ == "__main__":
     # Podman pods set PORT=5000 explicitly.
     port = int(os.getenv("PORT", "8000"))
     debug = os.getenv("FLASK_ENV", "development") != "production"
-    app.run(host="0.0.0.0", port=port, debug=debug)
+    # threaded: the /api/stream SSE endpoint holds a request open; without this the
+    # single-threaded dev server would block all other requests behind it.
+    app.run(host="0.0.0.0", port=port, debug=debug, threaded=True)
