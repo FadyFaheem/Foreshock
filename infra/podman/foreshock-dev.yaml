@@ -69,6 +69,36 @@ spec:
         - containerPort: 9092
           hostPort: 9092
 
+    # Local LLM (Ollama, CPU-only) - runs entirely in-pod, no host install needed.
+    # On first start it pulls the small models into a persistent volume (a fast
+    # no-op on later starts). Tuned to stay light on a CPU box: one request at a
+    # time and models kept warm so there is no per-request reload.
+    # ~3 GB RAM with llama3.2:1b + nomic-embed-text loaded.
+    - name: ollama
+      image: docker.io/ollama/ollama:latest
+      command: ["/bin/sh"]
+      args:
+        - "-c"
+        - "ollama serve & srv=$!; until ollama list >/dev/null 2>&1; do sleep 1; done; ollama pull \"$LLM_MODEL\"; ollama pull \"$EMBED_MODEL\"; wait $srv"
+      env:
+        - name: OLLAMA_HOST            # bind for the server (shared pod localhost)
+          value: 0.0.0.0:11434
+        - name: OLLAMA_KEEP_ALIVE      # keep models resident (no cold reloads)
+          value: "24h"
+        - name: OLLAMA_MAX_LOADED_MODELS  # chat (1b) + embeddings; both small
+          value: "2"
+        - name: OLLAMA_NUM_PARALLEL    # one request at a time -> low memory/CPU
+          value: "1"
+        # Models to pull on start. For an even lighter/snappier box, set LLM_MODEL
+        # to qwen2.5:0.5b. Keep EMBED_MODEL at nomic-embed-text (768-d schema).
+        - name: LLM_MODEL
+          value: llama3.2:1b
+        - name: EMBED_MODEL
+          value: nomic-embed-text
+      volumeMounts:
+        - name: ollama-models
+          mountPath: /root/.ollama
+
     # Flask API (thin layer over the src/ engine). Installs deps on start and
     # serves the dev server. The repo root is mounted read-only at /app so the
     # API can import src/ and load models/.
@@ -94,9 +124,13 @@ spec:
           value: postgres
         - name: DB_PASSWORD
           value: postgres
-        # Local LLM on the host (Ollama must listen on 0.0.0.0:11434).
+        # Local LLM: the ollama container in this pod (shared localhost).
         - name: OLLAMA_HOST
-          value: http://host.containers.internal:11434
+          value: http://localhost:11434
+        - name: LLM_MODEL
+          value: llama3.2:1b
+        - name: EMBED_MODEL
+          value: nomic-embed-text
         # Kafka broker (the kafka container in this pod).
         - name: KAFKA_BOOTSTRAP
           value: localhost:9092
@@ -182,6 +216,10 @@ spec:
       hostPath:
         path: /Users/fadyfaheem/Documents/GitHub/Foreshock/infra/database
         type: Directory
+    # Pulled Ollama models persist here across pod restarts.
+    - name: ollama-models
+      persistentVolumeClaim:
+        claimName: foreshock-dev-ollama
 
 ---
 apiVersion: v1
@@ -193,3 +231,14 @@ spec:
   resources:
     requests:
       storage: 1Gi
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: foreshock-dev-ollama
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 10Gi

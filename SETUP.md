@@ -42,10 +42,11 @@ The Diagnostics tab (RAG + LLM diagnosis, agent, evals, observability) needs a
 local LLM and a Postgres + pgvector database.
 
 ```bash
-# Ollama + tiny models (one-time). Use 0.0.0.0 so the Podman pod can reach it.
-ollama serve            # or run the Ollama.app; OLLAMA_HOST=0.0.0.0:11434 for pods
-ollama pull llama3.2:1b
-ollama pull nomic-embed-text
+# Ollama (LLM) for HOST dev - via Podman, no native install (the pods ship their own).
+podman run -d --name foreshock-ollama -p 11434:11434 \
+  -v foreshock-ollama:/root/.ollama docker.io/ollama/ollama
+podman exec foreshock-ollama ollama pull llama3.2:1b
+podman exec foreshock-ollama ollama pull nomic-embed-text
 
 # Postgres + pgvector for host dev (the Podman pod ships its own postgres-db).
 podman run -d --name foreshock-pg -p 5432:5432 \
@@ -61,9 +62,13 @@ python scripts/run_evals.py
 cd infra/api && DB_HOST=localhost OLLAMA_HOST=http://localhost:11434 python app.py
 ```
 
-In the Podman pod this is automatic: a `postgres-db` container is included and
-the API gets `DB_HOST=localhost` + `OLLAMA_HOST=http://host.containers.internal:11434`.
-After `podman play kube`, seed the pod's database once:
+In the Podman pod this is automatic: `postgres-db` **and** an `ollama` container
+are included. The LLM runs in-pod (CPU-only) and pulls `llama3.2:1b` +
+`nomic-embed-text` into a persistent volume on first start - no host Ollama
+needed. The API gets `DB_HOST=localhost` + `OLLAMA_HOST=http://localhost:11434`.
+(First diagnosis after a fresh start waits for the model pull; watch progress with
+`podman logs -f foreshock-dev-pod-ollama`.) After `podman play kube`, seed the
+pod's database once:
 
 ```bash
 podman exec foreshock-dev-pod-foreshock-api python /app/scripts/seed_kb.py
@@ -73,9 +78,10 @@ podman exec foreshock-dev-pod-foreshock-api python /app/scripts/seed_kb.py
 
 ```bash
 # v2 - train the health autoencoder (writes models/health_ae.joblib + health.npz)
-python scripts/train_health.py
-# optional real run-to-failure data:
-#   python scripts/download_ims.py   # then drop a test set under data/ims/ and re-run
+#   Real run-to-failure data (recommended): downloads + unpacks NASA IMS 2nd_test
+#   into data/ims/ (~1 GB), then trains on genuinely progressive degradation.
+python scripts/download_ims.py
+python scripts/train_health.py     # auto-detects data/ims/ (CWRU-derived fallback if absent)
 
 # v3 - needs a Kafka broker. The Podman pod includes one; for host dev:
 podman run -d --name foreshock-kafka -p 9092:9092 \

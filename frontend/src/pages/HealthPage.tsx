@@ -59,7 +59,7 @@ export default function HealthPage() {
 
       <Paper sx={{ p: 2 }}>
         <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 2 }}>
-          Reconstruction-error trend (run to failure)
+          Reconstruction-error trend (run to failure, log scale)
         </Typography>
         <Box sx={{ width: '100%', height: 360 }}>
           <ResponsiveContainer>
@@ -73,7 +73,19 @@ export default function HealthPage() {
                 height={48}
                 label={{ value: 'time (window index)', position: 'insideBottom', offset: -4 }}
               />
-              <YAxis tick={{ fontSize: 12 }} width={56} />
+              <YAxis
+                scale="log"
+                domain={['auto', 'auto']}
+                allowDataOverflow
+                tick={{ fontSize: 12 }}
+                width={56}
+                tickFormatter={(v) => {
+                  const n = Number(v);
+                  if (n >= 1000) return `${(n / 1000).toFixed(0)}k`;
+                  if (n >= 1) return `${n.toFixed(0)}`;
+                  return n.toFixed(2);
+                }}
+              />
               <Tooltip formatter={(v) => Number(v).toFixed(3)} />
               <Legend verticalAlign="top" height={30} />
               {trend && (

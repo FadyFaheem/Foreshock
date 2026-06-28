@@ -90,8 +90,11 @@ marshal requests/responses and render. If you need new analysis, add it to
 - **One store for relational + vector.** `db.py` wraps Postgres + pgvector
   (pooled `query`/`execute`, `run_migrations`). Embeddings are passed as numpy
   arrays so pgvector's adapter sends a `vector`, not `numeric[]`.
-- **RAG.** `rag.py` embeds the query and retrieves by cosine distance. The
-  corpus is seeded by `scripts/seed_kb.py`.
+- **RAG.** `rag.py` embeds the query and retrieves by cosine distance, with an
+  optional `prefer=<fault_type>` boost so the predicted condition's doc (and
+  general background) rank above other faults' docs - this keeps the LLM context
+  on-topic, which lifts retrieval precision/recall and eliminates cross-fault
+  hallucinations. The corpus is seeded by `scripts/seed_kb.py`.
 - **Agent.** `agent.py` orchestrates engine analysis + RAG + LLM + DB. Signal
   analysis still comes from `src/`; the agent only orchestrates and persists.
 - **Observability.** Every LLM/embedding call logs latency + tokens (+ retrieval
@@ -104,12 +107,14 @@ marshal requests/responses and render. If you need new analysis, add it to
 ## v2 / v3 conventions
 
 - **v2 health** (`src/health.py`, `infra/api/health_routes.py`). An autoencoder
-  (sklearn MLP + PCA - no DL framework) trained on healthy windows only;
-  reconstruction error is the health indicator, PCA(2) the embedding.
-  `scripts/train_health.py` writes `models/health_ae.joblib` + `health.npz`; the
-  API serves the precomputed timeline/embedding and can score a sample. Dataset-
-  agnostic: uses NASA IMS under `data/ims/` if present, else a CWRU-derived
-  run-to-failure timeline.
+  (sklearn MLP + PCA - no DL framework) trained on healthy windows only, plus
+  noise-augmented copies (the random generator) so the indicator tolerates
+  noisy-but-healthy signals instead of false-alarming; reconstruction error is the
+  health indicator, PCA(2) the embedding. `scripts/train_health.py` writes
+  `models/health_ae.joblib` + `health.npz`; the API serves the precomputed
+  timeline/embedding and can score a sample. Dataset-agnostic: uses NASA IMS under
+  `data/ims/` (fetch via `scripts/download_ims.py`) if present, else a
+  CWRU-derived run-to-failure timeline.
 - **v3 streaming** (`infra/api/stream.py`). A background thread consumes the
   Kafka topic with MANUAL partition assignment (`assign` + `seek_to_end`) - not a
   consumer group - to avoid rebalance stalls, runs inference, and fans results to

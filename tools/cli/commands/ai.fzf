@@ -27,3 +27,12 @@ python scripts/run_evals.py
 
 #Seed the knowledge base (host CLI)
 python scripts/seed_kb.py
+
+#List the Ollama models loaded in the pod
+podman exec foreshock-dev-pod-ollama ollama list
+
+#Switch to a lighter LLM (pull qwen2.5:0.5b into the pod)
+podman exec foreshock-dev-pod-ollama ollama pull qwen2.5:0.5b
+
+#Follow the in-pod Ollama logs (model pulls / inference)
+podman logs -f foreshock-dev-pod-ollama

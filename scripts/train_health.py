@@ -20,7 +20,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import numpy as np  # noqa: E402
 
-from src import config, data_loader, health, ims_loader  # noqa: E402
+from src import config, data_loader, health, ims_loader, synthetic  # noqa: E402
 from src.features import extract_features, extract_features_batch  # noqa: E402
 
 HEALTH_MODEL_PATH = config.MODELS_DIR / "health_ae.joblib"
@@ -30,6 +30,23 @@ HEALTH_DATA_PATH = config.MODELS_DIR / "health.npz"
 _TIMELINE_PER_PHASE = 150
 _EMBED_PER_CLASS = 150
 _SMOOTH = 7
+
+# (c) Harden the v2 health model with the random generator: we mix noise-augmented
+# copies of the HEALTHY windows into the autoencoder's training set so the
+# reconstruction-error indicator tolerates noisy-but-healthy signals (fewer false
+# alarms) without the model ever seeing a fault during training.
+_N_HEALTHY_AUGMENT = 200
+
+
+def _augment_healthy(healthy_windows, healthy_rpms, rng, fs):
+    """Feature rows for noise-augmented copies of the healthy windows (or None)."""
+    healthy_windows = np.asarray(healthy_windows)
+    if _N_HEALTHY_AUGMENT <= 0 or healthy_windows.shape[0] == 0:
+        return None
+    pick = rng.integers(0, healthy_windows.shape[0], size=_N_HEALTHY_AUGMENT)
+    wins = np.stack([synthetic.random_augment(healthy_windows[i], rng) for i in pick])
+    rpms = np.asarray(healthy_rpms, dtype=float)[pick]
+    return extract_features_batch(wins, fs=fs, rpms=rpms)
 
 
 def _smooth(x: np.ndarray, k: int = _SMOOTH) -> np.ndarray:
@@ -50,19 +67,26 @@ def _alarm_index(errors: np.ndarray, threshold: float) -> int:
 def _build_ims(test_dir: Path):
     """Build a real run-to-failure timeline from IMS snapshots (chronological)."""
     print(f"Using NASA IMS run-to-failure data: {test_dir}")
-    feats = []
-    for name, signal in ims_loader.iter_run(test_dir):
+    feats, windows = [], []
+    for _name, signal in ims_loader.iter_run(test_dir):
         window = signal[: config.WINDOW_SIZE]
+        windows.append(window)
         feats.append(extract_features(window, fs=ims_loader.IMS_FS, rpm=2000.0))
     X = np.vstack(feats)
+    W = np.stack(windows)
     n = X.shape[0]
-    # Early life is assumed healthy; train on the first third.
-    healthy = X[: max(5, n // 3)]
+    # Early life is assumed healthy; train the autoencoder on the first third only.
+    healthy_count = max(5, n // 3)
+    healthy = X[:healthy_count]
+    rng = np.random.default_rng(0)
+    aug = _augment_healthy(W[:healthy_count], np.full(healthy_count, 2000.0), rng, ims_loader.IMS_FS)
+    if aug is not None:
+        healthy = np.vstack([healthy, aug])
     model = health.fit_health_model(healthy)
     errors = model.errors(X)
     phase = np.array(
-        ["healthy"] * (n // 3) + ["degrading"] * (n - n // 3), dtype=object
-    )[:n]
+        ["healthy"] * healthy_count + ["degrading"] * (n - healthy_count), dtype=object
+    )
     return model, X, errors, phase, "ims"
 
 
@@ -70,9 +94,17 @@ def _build_cwru():
     """Build a CWRU-derived run-to-failure timeline (healthy block -> fault block)."""
     print("Using CWRU-derived run-to-failure timeline (no IMS data present).")
     windows, labels, _groups, rpms = data_loader.load_dataset()
+    windows = np.asarray(windows)
+    labels = np.asarray(labels)
+    rpms = np.asarray(rpms)
     X = extract_features_batch(windows, fs=config.DEFAULT_FS, rpms=rpms)
 
-    healthy = X[labels == "normal"]
+    healthy_mask = labels == "normal"
+    healthy = X[healthy_mask]
+    rng = np.random.default_rng(0)
+    aug = _augment_healthy(windows[healthy_mask], rpms[healthy_mask], rng, config.DEFAULT_FS)
+    if aug is not None:
+        healthy = np.vstack([healthy, aug])
     model = health.fit_health_model(healthy)
 
     # Sequence: healthy windows, then an inner-race fault block (one "asset").
@@ -88,7 +120,8 @@ def _build_cwru():
 def _build_embedding(model: health.HealthModel, X: np.ndarray, labels: np.ndarray):
     xs, ys, conds = [], [], []
     rng = np.random.default_rng(42)
-    for cond in config.CONDITIONS:
+    # Iterate the label set actually present (CWRU conditions, or IMS phases).
+    for cond in dict.fromkeys(np.asarray(labels).tolist()):
         idx = np.where(labels == cond)[0]
         if idx.size == 0:
             continue

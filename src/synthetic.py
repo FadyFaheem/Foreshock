@@ -75,3 +75,19 @@ def add_noise(
     rng = rng or np.random.default_rng()
     std = float(np.std(window)) or 1.0
     return window + rng.normal(0.0, noise_level * std, size=window.shape)
+
+
+def random_augment(
+    window: np.ndarray,
+    rng: np.random.Generator | None = None,
+    max_noise: float = 0.6,
+) -> np.ndarray:
+    """Add a random amount of Gaussian noise, for training-time augmentation.
+
+    Noise-only (no amplitude scaling): scaling would shift RMS/peak, which are
+    discriminative features here, and could mislabel a scaled-up healthy window
+    as a fault. Noise teaches sensor-noise robustness without that risk.
+    """
+    rng = rng or np.random.default_rng()
+    noise = float(rng.uniform(0.1, max_noise))
+    return add_noise(np.asarray(window, dtype=np.float64), noise, rng=rng)

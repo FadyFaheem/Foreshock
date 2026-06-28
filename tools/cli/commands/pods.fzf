@@ -1,5 +1,11 @@
+#All-in-one: bring up DEV (train if needed -> start pod -> wait -> seed KB)
+bash tools/cli/bootstrap.sh dev
+
+#All-in-one: bring up PROD (train if needed -> start pod -> wait -> seed KB)
+bash tools/cli/bootstrap.sh prod
+
 #Pre-pull required images
-podman pull docker.io/library/node:20-alpine && podman pull docker.io/library/python:3.11-slim && podman pull docker.io/pgvector/pgvector:pg16 && podman pull docker.io/cloudflare/cloudflared:latest
+podman pull docker.io/library/node:20-alpine && podman pull docker.io/library/python:3.11-slim && podman pull docker.io/pgvector/pgvector:pg16 && podman pull docker.io/apache/kafka:3.9.0 && podman pull docker.io/ollama/ollama:latest && podman pull docker.io/cloudflare/cloudflared:latest
 
 #Seed the knowledge base in the dev pod
 podman exec foreshock-dev-pod-foreshock-api python /app/scripts/seed_kb.py
@@ -50,7 +56,7 @@ podman exec -it foreshock-dev-pod-foreshock-api bash
 podman exec -it foreshock-dev-pod-foreshock-frontend sh
 
 #Check if required images are pulled
-podman images | grep -E "(node|python|cloudflared)"
+podman images | grep -E "(node|python|pgvector|kafka|ollama|cloudflared)"
 
 #Fix TLS certificate issues - configure registry to skip TLS verification
 mkdir -p ~/.config/containers && printf '[[registry]]\nlocation = "docker.io"\ninsecure = true\n' > ~/.config/containers/registries.conf && echo "Registry configured. You may need to restart Podman."

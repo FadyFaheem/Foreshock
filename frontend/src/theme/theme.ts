@@ -21,6 +21,9 @@ export const CONDITION_COLORS: Record<string, string> = {
   inner_race: '#ed6c02',
   outer_race: '#d32f2f',
   ball: '#7b1fa2',
+  // IMS run-to-failure phases (v2 health embedding).
+  healthy: '#2e7d32',
+  degrading: '#d32f2f',
 };
 
 export const chartSeriesColors = [

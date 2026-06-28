@@ -6,6 +6,9 @@ set -o pipefail
 folder_name="tools/cli/commands"
 scope=""
 
+# Lowercase helper. macOS ships bash 3.2, which lacks bash 4's ${var,,}, so use tr.
+to_lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
 usage() {
   cat <<'EOF'
 Usage: cmds.sh [scope] [--scope VALUE]
@@ -75,13 +78,13 @@ if [[ -n "$scope" && -d "$folder/$scope" ]]; then
     files+=("$path")
   done < <(find "$folder/$scope" -type f -print0 2>/dev/null)
 elif [[ -n "$scope" ]]; then
-  lower_scope=${scope,,}
+  lower_scope=$(to_lower "$scope")
   while IFS= read -r -d '' path; do
     rel=${path#"$folder"/}
     rel=${rel#/}
-    lower_rel=${rel,,}
+    lower_rel=$(to_lower "$rel")
     base=$(basename "$path")
-    lower_base=${base,,}
+    lower_base=$(to_lower "$base")
     if [[ "$lower_rel" == *"$lower_scope"* || "$lower_base" == *"$lower_scope"* ]]; then
       files+=("$path")
     fi

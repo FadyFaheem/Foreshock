@@ -22,8 +22,46 @@ if str(PROJECT_ROOT) not in sys.path:
 import numpy as np  # noqa: E402
 from sklearn.model_selection import StratifiedGroupKFold  # noqa: E402
 
-from src import config, data_loader, model  # noqa: E402
-from src.features import extract_features_batch  # noqa: E402
+from src import config, data_loader, model, synthetic  # noqa: E402
+from src.features import FEATURE_NAMES, extract_features_batch  # noqa: E402
+
+# Augmented (noisy/scaled) windows generated per class to improve robustness.
+N_AUGMENT_PER_CLASS = 50
+
+
+def _augment_from(
+    windows: np.ndarray,
+    labels: np.ndarray,
+    rpms: np.ndarray,
+    indices: np.ndarray,
+    rng: np.random.Generator,
+    per_class: int = N_AUGMENT_PER_CLASS,
+    noise: float | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build augmented feature rows from the given window indices.
+
+    ``noise=None`` uses random scaling + noise (training augmentation); a fixed
+    ``noise`` level applies that exact noise (for the robustness stress test).
+    Sampling per class keeps it balanced. Returns ``(X_aug, y_aug)``.
+    """
+    idx = np.asarray(indices)
+    sub_labels = labels[idx]
+    aug_X: list[np.ndarray] = []
+    aug_y: list[np.ndarray] = []
+    for cond in config.CONDITIONS:
+        pool = idx[sub_labels == cond]
+        if pool.size == 0:
+            continue
+        chosen = rng.choice(pool, size=per_class, replace=True)
+        if noise is None:
+            wins = np.stack([synthetic.random_augment(windows[i], rng) for i in chosen])
+        else:
+            wins = np.stack([synthetic.add_noise(windows[i], noise, rng) for i in chosen])
+        aug_X.append(extract_features_batch(wins, fs=config.DEFAULT_FS, rpms=rpms[chosen]))
+        aug_y.append(np.full(per_class, cond))
+    if not aug_X:
+        return np.empty((0, len(FEATURE_NAMES))), np.array([], dtype=str)
+    return np.vstack(aug_X), np.concatenate(aug_y)
 
 
 def _print_confusion_matrix(labels: list[str], matrix: list[list[int]]) -> None:
@@ -98,22 +136,49 @@ def main() -> int:
         f"  test  recordings: {sorted(set(groups[test_idx]))}"
     )
 
-    print("\nTraining (held-out evaluation) ...")
-    eval_model = model.train(X[train_idx], labels[train_idx])
+    # Data augmentation: add noisy/scaled windows (the same kind of variation the
+    # random generator / real sensors produce) to the TRAINING split only.
+    rng = np.random.default_rng(42)
+    Xaug_tr, yaug_tr = _augment_from(windows, labels, rpms, train_idx, rng)
+    X_tr = np.vstack([X[train_idx], Xaug_tr])
+    y_tr = np.concatenate([labels[train_idx], yaug_tr])
+    print(
+        f"\nAugmentation: {len(train_idx)} real + {len(yaug_tr)} generated "
+        f"(noisy/scaled) = {len(y_tr)} training windows"
+    )
+
+    print("Training (held-out evaluation, augmented) ...")
+    eval_model = model.train(X_tr, y_tr)
     metrics = model.evaluate(eval_model, X[test_idx], labels[test_idx])
-    print(f"\nHeld-out accuracy: {metrics['accuracy']:.4f}\n")
+    print(f"\nHeld-out (clean) accuracy: {metrics['accuracy']:.4f}\n")
     _print_confusion_matrix(metrics["labels"], metrics["confusion_matrix"])
     print("\nPer-class report:\n")
     print(metrics["report"])
 
-    # Refit the final model on ALL data for the best demo classifier, then save.
-    print("Refitting final model on all data ...")
-    final_model = model.train(X, labels)
+    # Robustness sweep: accuracy on increasingly-noised held-out windows, with
+    # vs without augmentation (honest - the noisy set comes from test recordings
+    # the models never trained on). CWRU is very separable, so the gap only opens
+    # at severe noise.
+    baseline = model.train(X[train_idx], labels[train_idx])
+    print("\nRobustness (accuracy on noised held-out windows):")
+    print(f"  {'noise':>6} {'baseline':>10} {'augmented':>10}")
+    for lvl in (0.6, 1.0, 1.5, 2.0):
+        Xn, yn = _augment_from(windows, labels, rpms, test_idx, rng, noise=lvl)
+        b = model.evaluate(baseline, Xn, yn)["accuracy"]
+        a = model.evaluate(eval_model, Xn, yn)["accuracy"]
+        print(f"  {lvl:>6.1f} {b:>10.4f} {a:>10.4f}")
+
+    # Refit the final model on ALL data + augmentation, then save.
+    print("\nRefitting final model on all data + augmentation ...")
+    Xaug_all, yaug_all = _augment_from(windows, labels, rpms, np.arange(len(labels)), rng)
+    final_model = model.train(
+        np.vstack([X, Xaug_all]), np.concatenate([labels, yaug_all])
+    )
     saved = model.save(final_model)
     print(f"Saved model to {saved}")
 
     _export_samples(groups, labels, test_idx)
-    print("\nDone. Start the API with: uvicorn backend.main:app --reload")
+    print("\nDone. Start the API: cd infra/api && python app.py")
     return 0
 
 

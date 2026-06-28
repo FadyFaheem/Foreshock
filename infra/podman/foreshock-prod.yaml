@@ -65,6 +65,37 @@ spec:
         - name: KAFKA_HEAP_OPTS
           value: "-Xmx512M -Xms256M"
 
+    # Local LLM (Ollama, CPU-only) - runs entirely in-pod, no host install needed.
+    # On first start it pulls the small models into a persistent volume (a fast
+    # no-op on later starts). Tuned to stay light on a CPU box: one request at a
+    # time and models kept warm so there is no per-request reload.
+    # ~3 GB RAM with llama3.2:1b + nomic-embed-text - comfortable on a 4c/32 GB host.
+    # NOTE: hostNetwork binds 11434 on the host; stop any host `ollama serve` first.
+    - name: ollama
+      image: docker.io/ollama/ollama:latest
+      command: ["/bin/sh"]
+      args:
+        - "-c"
+        - "ollama serve & srv=$!; until ollama list >/dev/null 2>&1; do sleep 1; done; ollama pull \"$LLM_MODEL\"; ollama pull \"$EMBED_MODEL\"; wait $srv"
+      env:
+        - name: OLLAMA_HOST            # bind for the server
+          value: 0.0.0.0:11434
+        - name: OLLAMA_KEEP_ALIVE      # keep models resident (no cold reloads)
+          value: "24h"
+        - name: OLLAMA_MAX_LOADED_MODELS  # chat (1b) + embeddings; both small
+          value: "2"
+        - name: OLLAMA_NUM_PARALLEL    # one request at a time -> low memory/CPU
+          value: "1"
+        # For an even lighter/snappier box, set LLM_MODEL to qwen2.5:0.5b.
+        # Keep EMBED_MODEL at nomic-embed-text (the DB schema is vector(768)).
+        - name: LLM_MODEL
+          value: llama3.2:1b
+        - name: EMBED_MODEL
+          value: nomic-embed-text
+      volumeMounts:
+        - name: ollama-models
+          mountPath: /root/.ollama
+
     # Flask API via gunicorn. Repo root mounted read-only at /app.
     - name: foreshock-api
       image: docker.io/python:3.11-slim
@@ -88,9 +119,13 @@ spec:
         # TODO: change this and POSTGRES_PASSWORD below before any non-local deploy.
         - name: DB_PASSWORD
           value: CHANGE-ME-postgres-password
-        # hostNetwork: the API reaches host Ollama on localhost.
+        # hostNetwork: the API reaches the in-pod ollama container on localhost.
         - name: OLLAMA_HOST
           value: http://localhost:11434
+        - name: LLM_MODEL
+          value: llama3.2:1b
+        - name: EMBED_MODEL
+          value: nomic-embed-text
         - name: KAFKA_BOOTSTRAP
           value: localhost:9092
       volumeMounts:
@@ -156,6 +191,10 @@ spec:
       hostPath:
         path: /home/ubuntu/Foreshock/infra/database
         type: Directory
+    # Pulled Ollama models persist here across pod restarts.
+    - name: ollama-models
+      persistentVolumeClaim:
+        claimName: foreshock-prod-ollama
 
 ---
 apiVersion: v1
@@ -167,3 +206,14 @@ spec:
   resources:
     requests:
       storage: 1Gi
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: foreshock-prod-ollama
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 10Gi

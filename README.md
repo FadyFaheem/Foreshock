@@ -169,10 +169,11 @@ Open <http://localhost:5173>.
 The AI layer needs a local LLM (Ollama) and Postgres + pgvector:
 
 ```bash
-# Ollama + tiny models (one-time). Bind 0.0.0.0 if the Podman pod must reach it.
-ollama serve            # or the Ollama.app; OLLAMA_HOST=0.0.0.0:11434 for pods
-ollama pull llama3.2:1b
-ollama pull nomic-embed-text
+# Ollama (LLM) for HOST dev - via Podman, no native install (the pods ship their own).
+podman run -d --name foreshock-ollama -p 11434:11434 \
+  -v foreshock-ollama:/root/.ollama docker.io/ollama/ollama
+podman exec foreshock-ollama ollama pull llama3.2:1b
+podman exec foreshock-ollama ollama pull nomic-embed-text
 
 # Postgres + pgvector for host dev (the Podman pod ships its own).
 podman run -d --name foreshock-pg -p 5432:5432 \
@@ -187,14 +188,23 @@ cd infra/api && DB_HOST=localhost OLLAMA_HOST=http://localhost:11434 python app.
 ```
 
 Open the **Diagnostics** tab in the UI for RAG diagnosis, the agent, evals, and
-the AI observability panel. In the Podman pod these are wired automatically
-(a `postgres-db` container + `OLLAMA_HOST=http://host.containers.internal:11434`).
+the AI observability panel. In the Podman pod these are wired automatically: a
+`postgres-db` container plus an in-pod, CPU-only `ollama` container that pulls
+`llama3.2:1b` + `nomic-embed-text` on first start (no host Ollama needed).
 
 ### Option B — Podman pods
 
 Requires the `podman` CLI and a running Podman machine
-(`podman machine init && podman machine start` on macOS). Train the model first
-(Option A steps for download + train) so `models/` is populated.
+(`podman machine init && podman machine start` on macOS).
+
+**All-in-one** — trains the models if `models/` is empty, starts the pod, waits
+for Postgres + Ollama's first model pull + the API, then seeds the knowledge base:
+
+```bash
+bash tools/cli/bootstrap.sh dev      # or: prod
+```
+
+Or do it manually (train the model first so `models/` is populated):
 
 ```bash
 podman play kube infra/podman/foreshock-dev.yaml
@@ -205,7 +215,7 @@ Or use the interactive runner (needs `fzf`):
 
 ```bash
 alias cmds='bash tools/cli/cmds.sh'
-cmds pods        # start/stop/rebuild/logs
+cmds pods        # all-in-one bring-up, start/stop/rebuild/logs
 cmds api         # health, samples, predict, logs
 cmds test        # run test suites
 cmds cf          # Cloudflare Tunnel setup
@@ -319,12 +329,13 @@ pages:
 ## Predictive-maintenance lifecycle (v2 + v3, implemented)
 
 - **v2 - catch failures earlier (Health tab).** A feature-space autoencoder
-  trained on healthy data only; reconstruction error is an unsupervised health
-  indicator that rises before a hard fault, with a 2-D embedding showing healthy
-  data clustering and faults drifting away. Runs on a run-to-failure timeline
-  (CWRU-derived by default; drop in the real NASA IMS set via
-  `scripts/download_ims.py` + `data/ims/` and it is used automatically). Train:
-  `python scripts/train_health.py`.
+  trained on healthy data only (noise-augmented for false-alarm robustness);
+  reconstruction error is an unsupervised health indicator (log-scaled) that rises
+  before a hard fault, with a 2-D embedding showing healthy data clustering and
+  faults drifting away. Runs on the real NASA IMS run-to-failure set:
+  `python scripts/download_ims.py` fetches and unpacks it into `data/ims/`
+  (CWRU-derived fallback if absent), then `python scripts/train_health.py` trains
+  on genuinely progressive degradation - the alarm fires ~2 days before failure.
 - **v3 - live sensor feed (Live tab).** Signal windows stream through Kafka; a
   background consumer runs inference on each and pushes results to the browser
   over SSE. Start a simulated feed from the UI, or
@@ -332,7 +343,7 @@ pages:
 
 ### Further ideas
 
-- Real IMS run-to-failure ingestion at scale; richer remaining-useful-life trends.
+- Remaining-useful-life (RUL) regression across all IMS test sets; multi-asset trends.
 - Multi-partition Kafka + a dedicated consumer service for horizontal scale.
 
 ## More docs
