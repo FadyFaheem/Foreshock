@@ -46,7 +46,7 @@ export default function HealthPage() {
     <Stack spacing={2}>
       <Paper sx={{ p: 2 }}>
         <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-          Health indicator (v2) - autoencoder reconstruction error
+          Health indicator - autoencoder reconstruction error
         </Typography>
         <Typography variant="caption" color="text.secondary">
           An autoencoder trained on healthy data only. Reconstruction error stays low while the
@@ -58,23 +58,24 @@ export default function HealthPage() {
       {error && <Alert severity="error">{error}</Alert>}
 
       <Paper sx={{ p: 2 }}>
-        <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
+        <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 2 }}>
           Reconstruction-error trend (run to failure)
         </Typography>
-        <Box sx={{ width: '100%', height: 300 }}>
+        <Box sx={{ width: '100%', height: 360 }}>
           <ResponsiveContainer>
-            <LineChart data={trendData} margin={{ top: 12, right: 24, bottom: 18, left: 0 }}>
+            <LineChart data={trendData} margin={{ top: 10, right: 28, bottom: 32, left: 8 }}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis
                 dataKey="i"
                 type="number"
                 domain={['dataMin', 'dataMax']}
                 tick={{ fontSize: 12 }}
-                label={{ value: 'time (window index)', position: 'insideBottom', offset: -8 }}
+                height={48}
+                label={{ value: 'time (window index)', position: 'insideBottom', offset: -4 }}
               />
               <YAxis tick={{ fontSize: 12 }} width={56} />
               <Tooltip formatter={(v) => Number(v).toFixed(3)} />
-              <Legend />
+              <Legend verticalAlign="top" height={30} />
               {trend && (
                 <ReferenceLine
                   y={trend.threshold}
@@ -99,18 +100,18 @@ export default function HealthPage() {
       </Paper>
 
       <Paper sx={{ p: 2 }}>
-        <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
+        <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 2 }}>
           2-D embedding - healthy clustering, faults drifting away
         </Typography>
-        <Box sx={{ width: '100%', height: 340 }}>
+        <Box sx={{ width: '100%', height: 400 }}>
           <ResponsiveContainer>
-            <ScatterChart margin={{ top: 12, right: 24, bottom: 18, left: 0 }}>
+            <ScatterChart margin={{ top: 10, right: 28, bottom: 32, left: 8 }}>
               <CartesianGrid strokeDasharray="3 3" />
-              <XAxis type="number" dataKey="x" name="PC1" tick={{ fontSize: 12 }} label={{ value: 'PC1', position: 'insideBottom', offset: -8 }} />
+              <XAxis type="number" dataKey="x" name="PC1" tick={{ fontSize: 12 }} height={44} label={{ value: 'PC1', position: 'insideBottom', offset: -4 }} />
               <YAxis type="number" dataKey="y" name="PC2" tick={{ fontSize: 12 }} width={56} />
-              <ZAxis range={[28, 28]} />
+              <ZAxis range={[36, 36]} />
               <Tooltip cursor={{ strokeDasharray: '3 3' }} />
-              <Legend />
+              <Legend verticalAlign="top" height={30} />
               {Object.entries(byCond).map(([cond, pts]) => (
                 <Scatter
                   key={cond}

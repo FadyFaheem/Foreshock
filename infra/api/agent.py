@@ -32,8 +32,9 @@ logger = logging.getLogger(__name__)
 SYSTEM_PROMPT = (
     "You are a vibration-analysis maintenance assistant for rolling-element "
     "bearings. Use ONLY the supplied analysis results and knowledge-base "
-    "context. Do NOT invent fault types, frequencies, or facts not present in "
-    "the context. Respond with strict JSON only, matching the requested schema."
+    "context. Describe ONLY the single predicted condition you are given; never "
+    "mention or compare other fault types. Do NOT invent fault types, "
+    "frequencies, or facts not in the context. Respond with strict JSON only."
 )
 
 # Envelope-spectrum feature that corroborates each fault class.
@@ -131,6 +132,9 @@ def _build_user_prompt(
         f"{ {k: round(v, 1) for k, v in freqs.items()} }.\n"
         f"Key features: {key_feats}.\n\n"
         f"Knowledge base context:\n{context}\n\n"
+        f'Write strictly about "{_label(condition)}" only; do not name any other '
+        "bearing fault type (inner race, outer race, ball, or cage) unless it is "
+        "the predicted condition itself.\n\n"
         "Return JSON with exactly these keys: "
         '{"summary": string (2-3 sentences), '
         '"severity": one of "none"|"low"|"medium"|"high", '
@@ -207,13 +211,23 @@ def _sources(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def _retrieve(condition: str) -> tuple[list[dict[str, Any]], float | None]:
-    query = (
-        f"{_label(condition)} bearing fault: evidence, severity and recommended "
-        "maintenance actions"
+def _retrieval_query(condition: str) -> str:
+    if condition == "normal":
+        return (
+            "healthy bearing baseline vibration signature, low RMS and kurtosis, "
+            "no fault frequencies"
+        )
+    return (
+        f"{_label(condition)} bearing fault: characteristic fault frequency, "
+        "envelope-spectrum evidence, severity and recommended maintenance actions"
     )
+
+
+def _retrieve(condition: str) -> tuple[list[dict[str, Any]], float | None]:
     try:
-        docs = rag.retrieve(query, top_k=4)
+        # Focus retrieval on the predicted condition (+ general background) so the
+        # context never contains a different fault's document.
+        docs = rag.retrieve(_retrieval_query(condition), top_k=4, prefer=condition)
         return docs, (docs[0]["score"] if docs else None)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Retrieval failed: %s", exc)

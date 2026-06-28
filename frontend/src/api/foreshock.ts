@@ -90,6 +90,48 @@ export function randomTest(condition: string, noise: number): Promise<RandomTest
   return apiJson<RandomTestResult>('/api/random_test', { method: 'POST', body: form });
 }
 
+export interface InjectBase {
+  signal: number[];
+  fs: number;
+  rpm: number;
+}
+
+export interface HealthVerdict {
+  error: number;
+  threshold: number;
+  caught: boolean;
+}
+
+export interface InjectResult {
+  prediction: string;
+  prediction_label: string;
+  confidence: number;
+  classifier_caught: boolean;
+  caught: boolean;
+  n_points: number;
+  amplitude: number;
+  probabilities: ClassProbability[];
+  health: HealthVerdict | null;
+  waveform: { t: number[]; x: number[] };
+}
+
+export function getInjectBase(): Promise<InjectBase> {
+  return apiJson<InjectBase>('/api/inject/base');
+}
+
+export function injectFaults(
+  signal: number[],
+  points: number[],
+  amplitude: number,
+  fs: number,
+  rpm: number,
+): Promise<InjectResult> {
+  return apiJson<InjectResult>('/api/inject', {
+    method: 'POST',
+    body: JSON.stringify({ signal, points, amplitude, fs, rpm }),
+  });
+}
+
 // --- AI layer: RAG diagnosis, agent, evals, observability -----------------
 
 export interface AIStatus {

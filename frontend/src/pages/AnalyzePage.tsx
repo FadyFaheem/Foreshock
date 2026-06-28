@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Alert, Box, Paper, Stack, Typography } from '@mui/material';
-import RandomTester from '../components/RandomTester';
 import SignalPicker from '../components/SignalPicker';
 import WaveformChart from '../components/WaveformChart';
 import SpectrumChart from '../components/SpectrumChart';
@@ -131,8 +130,6 @@ export default function AnalyzePage() {
         <PredictionCard prediction={prediction} loading={loading} />
         <FeatureTable features={prediction?.features ?? []} />
       </Box>
-
-      <RandomTester samples={samples} />
     </Stack>
   );
 }

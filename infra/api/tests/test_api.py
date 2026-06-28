@@ -69,6 +69,21 @@ def test_random_test_specific_condition(client):
     assert resp.get_json()["actual"] == "ball"
 
 
+def test_inject_base_and_inject(client):
+    base = client.get("/api/inject/base")
+    assert base.status_code == 200
+    sig = base.get_json()["signal"]
+    assert len(sig) >= 2048
+    resp = client.post(
+        "/api/inject",
+        json={"signal": sig, "points": [100, 500, 1500], "amplitude": 2.5},
+    )
+    assert resp.status_code == 200
+    d = resp.get_json()
+    assert {"caught", "prediction", "confidence", "waveform"} <= d.keys()
+    assert isinstance(d["caught"], bool)
+
+
 def test_predict_csv_upload(client):
     csv_bytes = ("\n".join("0.0" for _ in range(4096))).encode()
     data = {"file": (io.BytesIO(csv_bytes), "signal.csv")}

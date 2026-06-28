@@ -11,6 +11,7 @@ import numpy as np
 from flask import Blueprint, jsonify, request
 
 from engine import get_engine
+from health_routes import get_health_model
 from src import config, data_loader, synthetic
 from src.features import (
     FEATURE_NAMES,
@@ -227,5 +228,81 @@ def random_test():
         waveform={
             "t": downsample(t, config.WAVEFORM_POINTS).tolist(),
             "x": downsample(window, config.WAVEFORM_POINTS).tolist(),
+        },
+    )
+
+
+@api_bp.get("/inject/base")
+def inject_base():
+    """Return a fresh healthy window for the fault-injection tool."""
+    eng, err = _engine_or_503()
+    if err:
+        return err
+    i = eng.index.get("normal", 0)
+    window = synthetic.random_window(eng.signals[i], rng=np.random.default_rng())
+    return jsonify(signal=window.tolist(), fs=eng.fs, rpm=float(eng.rpms[i]))
+
+
+@api_bp.post("/inject")
+def inject():
+    """Inject defect impulses at chosen spots and report whether it's caught.
+
+    Body: ``{signal: [...], points: [idx...], amplitude, fs, rpm}``. Runs the
+    classifier and (if trained) the health autoencoder; ``caught`` is true if
+    either flags the modified signal as non-healthy.
+    """
+    eng, err = _engine_or_503()
+    if err:
+        return err
+    body = request.get_json(silent=True) or {}
+    sig = np.asarray(body.get("signal") or [], dtype=np.float64)
+    points = body.get("points") or []
+    amplitude = float(body.get("amplitude", 1.0))
+    if sig.shape[0] < config.WINDOW_SIZE:
+        return jsonify(error=f"signal must have >= {config.WINDOW_SIZE} samples"), 400
+    fs = int(body.get("fs", eng.fs))
+    rpm = float(body.get("rpm", config.DEFAULT_RPM))
+
+    modified = synthetic.inject_impulses(sig, points, amplitude=amplitude, fs=fs)
+    X = extract_features_batch(modified[np.newaxis, :], fs=fs, rpms=rpm)
+    proba = eng.model.predict_proba(X)[0]
+    classes = [str(c) for c in eng.model.classes_]
+    best = int(np.argmax(proba))
+    pred = classes[best]
+    classifier_caught = pred != "normal"
+
+    health = None
+    hm = get_health_model()
+    if hm is not None:
+        err_val = float(hm.errors(X)[0])
+        health = {
+            "error": err_val,
+            "threshold": float(hm.threshold),
+            "caught": bool(err_val > hm.threshold),
+        }
+
+    caught = classifier_caught or bool(health and health["caught"])
+    order = {c: i for i, c in enumerate(config.CONDITIONS)}
+    probabilities = sorted(
+        (
+            {"condition": c, "label": _label(c), "probability": float(p)}
+            for c, p in zip(classes, proba)
+        ),
+        key=lambda d: order.get(d["condition"], 99),
+    )
+    t = np.arange(modified.shape[0]) / fs
+    return jsonify(
+        prediction=pred,
+        prediction_label=_label(pred),
+        confidence=float(proba[best]),
+        classifier_caught=classifier_caught,
+        caught=caught,
+        n_points=len(points),
+        amplitude=amplitude,
+        probabilities=probabilities,
+        health=health,
+        waveform={
+            "t": downsample(t, config.WAVEFORM_POINTS).tolist(),
+            "x": downsample(modified, config.WAVEFORM_POINTS).tolist(),
         },
     )

@@ -30,6 +30,12 @@ def _load():
     return _data, _model
 
 
+def get_health_model() -> health_engine.HealthModel | None:
+    """Return the loaded health autoencoder (or None), for reuse by other routes."""
+    _, model = _load()
+    return model
+
+
 def _label(condition: str) -> str:
     return config.CONDITION_LABELS.get(condition, condition)
 

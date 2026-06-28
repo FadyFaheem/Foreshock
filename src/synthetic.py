@@ -29,6 +29,37 @@ def random_window(
     return x[start : start + window]
 
 
+def inject_impulses(
+    signal: np.ndarray,
+    points: list[int],
+    amplitude: float = 1.0,
+    fs: int = config.DEFAULT_FS,
+    res_hz: float = 3000.0,
+    decay_ms: float = 3.0,
+) -> np.ndarray:
+    """Inject damped resonance bursts at the given sample indices.
+
+    Each burst is a decaying sinusoid (a stylized bearing-impact transient)
+    scaled to ``amplitude`` times the signal's std, so injecting defects at
+    specific spots in an otherwise-healthy window raises its impulsiveness.
+    """
+    x = np.asarray(signal, dtype=np.float64).copy()
+    n = x.shape[0]
+    if not points or amplitude <= 0:
+        return x
+    sd = float(np.std(x)) or 1.0
+    tau = decay_ms / 1000.0
+    burst_len = max(8, int(fs * tau * 4))
+    t = np.arange(burst_len) / fs
+    burst = np.exp(-t / tau) * np.sin(2 * np.pi * res_hz * t)
+    for p in points:
+        p = int(p)
+        if 0 <= p < n:
+            end = min(n, p + burst_len)
+            x[p:end] += amplitude * sd * burst[: end - p]
+    return x
+
+
 def add_noise(
     window: np.ndarray,
     noise_level: float = 0.0,

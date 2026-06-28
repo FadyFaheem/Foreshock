@@ -1,14 +1,18 @@
+import { useState } from 'react';
 import {
   AppBar,
   Box,
   Button,
   Container,
+  Fab,
   Link,
   Toolbar,
   Typography,
 } from '@mui/material';
 import GraphicEqIcon from '@mui/icons-material/GraphicEq';
+import BiotechIcon from '@mui/icons-material/Biotech';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
+import TesterDialog from './TesterDialog';
 
 const APP_NAME = 'Foreshock';
 const REPO_URL = 'https://github.com/FadyFaheem/Foreshock';
@@ -26,6 +30,7 @@ const NAV = [
 export default function AppLayout() {
   const navigate = useNavigate();
   const location = useLocation();
+  const [testerOpen, setTesterOpen] = useState(false);
 
   return (
     <Box
@@ -105,6 +110,16 @@ export default function AppLayout() {
           <Outlet />
         </Container>
       </Box>
+
+      <Fab
+        color="secondary"
+        aria-label="signal tester"
+        onClick={() => setTesterOpen(true)}
+        sx={{ position: 'fixed', bottom: 24, right: 24 }}
+      >
+        <BiotechIcon />
+      </Fab>
+      <TesterDialog open={testerOpen} onClose={() => setTesterOpen(false)} />
     </Box>
   );
 }

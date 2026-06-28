@@ -94,7 +94,7 @@ export default function LivePage() {
         <Stack direction="row" justifyContent="space-between" alignItems="center" flexWrap="wrap">
           <Box>
             <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-              Live sensor feed (v3) - Kafka
+              Live sensor feed - Kafka
             </Typography>
             <Typography variant="caption" color="text.secondary">
               Windows stream through Kafka; a consumer runs inference and pushes results here over SSE.
