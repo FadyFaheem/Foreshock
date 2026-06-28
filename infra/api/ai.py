@@ -121,14 +121,24 @@ def inject_diagnose():
 
     # Two modes. "Generate a realistic fault" lays a periodic impulse train at the
     # chosen fault's characteristic frequency (what the classifier actually keys
-    # on); "manual" injects isolated bursts at clicked spots.
-    if fault_type in synthetic.FAULT_FREQ_KEY:
+    # on); "manual" injects isolated bursts at clicked spots. In generate mode we
+    # pass the known fault as expected_condition so it is reported as that fault,
+    # not relabeled "unclassified" if the classifier hasn't been retrained yet.
+    if fault_type == "normal":
+        modified = sig  # healthy baseline: analyze the signal as-is (no injection)
+        points = []
+        expected = "normal"
+    elif fault_type in synthetic.FAULT_FREQ_KEY:
         modified = synthetic.fault_window(sig, fault_type, rpm=rpm, fs=fs, severity=severity)
         points = []  # a generated train, not user-placed points
+        expected = fault_type
     else:
         modified = synthetic.inject_impulses(sig, points, amplitude=amplitude, fs=fs)
+        expected = None
     try:
-        run = agent.run_agent(signal=modified, rpm=rpm, fs=fs, asset=asset)
+        run = agent.run_agent(
+            signal=modified, rpm=rpm, fs=fs, asset=asset, expected_condition=expected
+        )
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
 

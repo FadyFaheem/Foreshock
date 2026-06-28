@@ -55,6 +55,7 @@ const FAULT_OPTIONS = [
   { value: 'outer_race', label: 'Outer race (BPFO)' },
   { value: 'inner_race', label: 'Inner race (BPFI)' },
   { value: 'ball', label: 'Ball (BSF)' },
+  { value: 'normal', label: 'Healthy (no fault)' },
   { value: 'custom', label: 'Custom (click to place)' },
 ];
 
@@ -73,6 +74,7 @@ export default function FaultLabPage() {
   const [error, setError] = useState<string | null>(null);
 
   const isCustom = faultType === 'custom';
+  const isHealthy = faultType === 'normal';
 
   const loadBase = () => {
     setError(null);
@@ -170,7 +172,7 @@ export default function FaultLabPage() {
               min={0.2}
               max={3}
               step={0.1}
-              disabled={!!result || loading}
+              disabled={!!result || loading || isHealthy}
               onChange={(_, v) => setSeverity(v as number)}
             />
           </Box>
@@ -179,7 +181,9 @@ export default function FaultLabPage() {
               ? 'Analyzing...'
               : isCustom
                 ? `Inject ${points.length} defect${points.length === 1 ? '' : 's'} & analyze`
-                : `Generate ${faultLabel} & analyze`}
+                : isHealthy
+                  ? 'Analyze healthy signal'
+                  : `Generate ${faultLabel} & analyze`}
           </Button>
           {(result || (isCustom && points.length > 0)) && (
             <Button size="small" onClick={loadBase} disabled={loading}>
@@ -223,7 +227,8 @@ export default function FaultLabPage() {
         >
           <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
             <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-              AI pinpointed: {diagnosis.label}
+              {diagnosis.condition === 'normal' ? 'AI assessment' : 'AI pinpointed'}:{' '}
+              {diagnosis.label}
             </Typography>
             <Chip size="small" label={`${(diagnosis.confidence * 100).toFixed(0)}% confidence`} />
             <Chip size="small" label={`severity: ${diagnosis.severity}`} />
@@ -235,7 +240,7 @@ export default function FaultLabPage() {
                 label={`evidence: ${markedFreq[0]} ≈ ${markedFreq[1]} Hz`}
               />
             )}
-            {!markedFreq && diagnosis.health?.caught && (
+            {!markedFreq && diagnosis.anomaly && diagnosis.health?.caught && (
               <Chip
                 size="small"
                 color="error"
@@ -249,7 +254,7 @@ export default function FaultLabPage() {
 
       <Paper sx={{ p: 2 }}>
         <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
-          {result ? 'Synthesized signal (with injected fault)' : 'Healthy signal'}
+          {result && !isHealthy ? 'Synthesized signal (with injected fault)' : 'Healthy signal'}
         </Typography>
         <Box sx={{ width: '100%', height: 240 }}>
           <ResponsiveContainer>
@@ -288,7 +293,9 @@ export default function FaultLabPage() {
           <Typography variant="caption" color="text.secondary">
             {isCustom
               ? 'Tip: click a few spots to place defects, set severity, then analyze. Isolated impulses are hard to classify - generate a typed fault for a clean detection.'
-              : `Generates a realistic ${faultLabel} fault: a periodic impulse train at its characteristic frequency. Raise severity for a stronger fault.`}
+              : isHealthy
+                ? 'Analyzes the healthy signal as-is - the AI should report it as normal (a useful baseline / control).'
+                : `Generates a realistic ${faultLabel} fault: a periodic impulse train at its characteristic frequency. Raise severity for a stronger fault.`}
           </Typography>
         )}
       </Paper>

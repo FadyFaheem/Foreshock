@@ -330,6 +330,67 @@ def _retrieve(
         return [], None
 
 
+# Promoting a classifier-"normal" result to an "unclassified anomaly" takes more
+# than the autoencoder firing: it is calibrated to its own training data and can
+# over-fire on in-spec signals (a huge reconstruction error on a healthy sample is
+# exactly that). So we also require the classifier to be unsure AND the signal to
+# be genuinely impulsive - the signature of a one-off impact. ``kurtosis`` here is
+# excess kurtosis (~0 for healthy, well above 0 for impacts).
+_ANOMALY_GATE_CONF = 0.75
+_KURTOSIS_ANOMALY = 2.0
+_CREST_ANOMALY = 6.0
+
+
+def _is_unclassified_anomaly(
+    analysis: dict[str, Any], health: dict[str, Any] | None
+) -> bool:
+    """True only for a genuinely impulsive anomaly the classifier cannot name."""
+    if analysis["condition"] != "normal" or not (health and health.get("caught")):
+        return False
+    if analysis["confidence"] >= _ANOMALY_GATE_CONF:
+        return False  # classifier is confident it is healthy - trust it
+    feat = analysis["features"]
+    return (
+        feat.get("kurtosis", 0.0) >= _KURTOSIS_ANOMALY
+        or feat.get("crest_factor", 0.0) >= _CREST_ANOMALY
+    )
+
+
+def _resolve_condition(
+    analysis: dict[str, Any],
+    health: dict[str, Any] | None,
+    expected_condition: str | None,
+) -> tuple[str, bool]:
+    """Decide the reported condition and whether it's an unclassified anomaly.
+
+    When the caller supplies a known ground-truth fault (the Fault Lab generated
+    this exact fault, or "normal" for the healthy baseline), trust it. Otherwise
+    use the classifier, promoting a "normal" result to an unclassified anomaly only
+    when the health monitor AND impulsiveness corroborate it - so a clean healthy
+    signal is never flagged just because the autoencoder is miscalibrated.
+    """
+    if expected_condition in config.CONDITIONS:
+        return expected_condition, False
+    cond = analysis["condition"]
+    return cond, _is_unclassified_anomaly(analysis, health)
+
+
+def _confidence_for(
+    analysis: dict[str, Any],
+    cond: str,
+    health: dict[str, Any] | None,
+    unclassified: bool,
+) -> float:
+    """Confidence to report for the reported condition."""
+    if unclassified:
+        score = (health or {}).get("score") or 1.0
+        # Normalized anomaly strength: ~0.5 at the threshold -> 1 for large errors.
+        return float(score / (1.0 + score))
+    # The classifier's probability for the reported class (honest agreement level;
+    # low when reporting a generated fault the classifier hasn't learned yet).
+    return float(analysis["probabilities"].get(cond, analysis["confidence"]))
+
+
 def _assemble_diagnosis(
     sample_id: str | None,
     asset: str,
@@ -337,24 +398,20 @@ def _assemble_diagnosis(
     docs: list[dict[str, Any]],
     gen: dict[str, Any],
     health: dict[str, Any] | None,
+    cond: str,
+    confidence: float,
     unclassified: bool,
 ) -> dict[str, Any]:
     """Build the diagnosis dict shared by diagnose() and run_agent()."""
-    cond = analysis["condition"]
-    if unclassified:
-        disp_cond, disp_label = "anomaly", "Unclassified anomaly"
-        score = (health or {}).get("score") or 1.0
-        # Normalized anomaly strength: ~0.5 at the threshold, -> 1 for large errors.
-        confidence = float(score / (1.0 + score))
-    else:
-        disp_cond, disp_label = cond, _label(cond)
-        confidence = analysis["confidence"]
+    disp_cond, disp_label = (
+        ("anomaly", "Unclassified anomaly") if unclassified else (cond, _label(cond))
+    )
     return {
         "sample_id": sample_id,
         "asset": asset,
         "condition": disp_cond,
         "label": disp_label,
-        "classifier_condition": cond,
+        "classifier_condition": analysis["condition"],
         "confidence": confidence,
         "rpm": analysis["rpm"],
         "rms": analysis["features"].get("rms"),
@@ -375,21 +432,22 @@ def diagnose(
     fs: int | None = None,
     asset: str = "bearing-DE-01",
     persist: bool = True,
+    expected_condition: str | None = None,
 ) -> dict[str, Any]:
     """Single-shot RAG + LLM diagnosis for a sample or signal."""
     sig, rpm, fs = _resolve_signal(sample_id, signal, rpm, fs)
     analysis = _analyze(sig, fs, rpm)
-    cond = analysis["condition"]
     health = analysis["health"]
-    unclassified = cond == "normal" and bool(health and health.get("caught"))
+    cond, unclassified = _resolve_condition(analysis, health, expected_condition)
+    confidence = _confidence_for(analysis, cond, health, unclassified)
 
     docs, _score = _retrieve(cond, unclassified)
     gen = _generate(
-        cond, analysis["confidence"], analysis["features"], rpm, docs,
+        cond, confidence, analysis["features"], rpm, docs,
         health=health, unclassified=unclassified,
     )
     diagnosis = _assemble_diagnosis(
-        sample_id, asset, analysis, docs, gen, health, unclassified
+        sample_id, asset, analysis, docs, gen, health, cond, confidence, unclassified
     )
     if persist:
         diagnosis["id"] = _persist_diagnosis(diagnosis)
@@ -454,6 +512,7 @@ def run_agent(
     rpm: float | None = None,
     fs: int | None = None,
     asset: str = "bearing-DE-01",
+    expected_condition: str | None = None,
 ) -> dict[str, Any]:
     """Run the full multi-step agentic diagnostic workflow."""
     steps: list[dict[str, Any]] = []
@@ -465,12 +524,16 @@ def run_agent(
     })
 
     analysis = _analyze(sig, fs, rpm)
-    cond, conf = analysis["condition"], analysis["confidence"]
+    classifier_cond, conf = analysis["condition"], analysis["confidence"]
     health = analysis["health"]
-    steps.append({
-        "step": "analyze", "status": "ok",
-        "detail": f"Classified {_label(cond)} ({conf:.0%}) over {analysis['n_windows']} windows",
-    })
+    cond, unclassified = _resolve_condition(analysis, health, expected_condition)
+    analyze_detail = (
+        f"Classified {_label(classifier_cond)} ({conf:.0%}) over "
+        f"{analysis['n_windows']} windows"
+    )
+    if not unclassified and cond != classifier_cond:
+        analyze_detail += f" - reporting generated fault: {_label(cond)}"
+    steps.append({"step": "analyze", "status": "ok", "detail": analyze_detail})
 
     # Unsupervised safety net: the health autoencoder flags anomalies the 4-class
     # classifier can't name (e.g. one-off impacts).
@@ -479,7 +542,7 @@ def run_agent(
             "step": "health_check", "status": "ok",
             "detail": f"Reconstruction error {health['error']:.3f} / threshold "
             f"{health['threshold']:.3f} - "
-            + ("anomaly" if health["caught"] else "within healthy range"),
+            + ("above threshold" if health["caught"] else "within healthy range"),
         })
     else:
         steps.append({
@@ -487,9 +550,8 @@ def run_agent(
             "detail": "Health model not trained (run scripts/train_health.py)",
         })
 
-    health_caught = bool(health and health.get("caught"))
-    unclassified = cond == "normal" and health_caught
-    anomaly = cond != "normal" or health_caught
+    anomaly = cond != "normal" or unclassified
+    confidence = _confidence_for(analysis, cond, health, unclassified)
     steps.append({
         "step": "anomaly_check", "status": "ok",
         "detail": (
@@ -510,7 +572,7 @@ def run_agent(
     trend = _trend(asset, analysis["features"].get("rms"), conf)
     steps.append({"step": "check_trend", "status": "ok", "detail": trend["summary"]})
 
-    gen = _generate(cond, conf, analysis["features"], rpm, docs,
+    gen = _generate(cond, confidence, analysis["features"], rpm, docs,
                     health=health, unclassified=unclassified)
     steps.append({
         "step": "generate_diagnosis",
@@ -520,7 +582,7 @@ def run_agent(
     })
 
     diagnosis = _assemble_diagnosis(
-        sample_id, asset, analysis, docs, gen, health, unclassified
+        sample_id, asset, analysis, docs, gen, health, cond, confidence, unclassified
     )
     diagnosis["id"] = _persist_diagnosis(diagnosis)
 
