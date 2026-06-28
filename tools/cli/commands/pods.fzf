@@ -40,8 +40,20 @@ podman pod ps
 #List containers in dev pod
 podman ps --filter pod=foreshock-dev-pod
 
-#View dev pod logs
+#List containers in prod pod
+podman ps --filter pod=foreshock-prod-pod
+
+#View dev pod logs (all containers)
 podman pod logs foreshock-dev-pod
+
+#Follow dev pod logs in real-time (all containers)
+podman pod logs -f foreshock-dev-pod
+
+#View prod pod logs (all containers)
+podman pod logs foreshock-prod-pod
+
+#Follow prod pod logs in real-time (all containers)
+podman pod logs -f foreshock-prod-pod
 
 #View API container logs (dev)
 podman logs foreshock-dev-pod-foreshock-api
@@ -49,11 +61,35 @@ podman logs foreshock-dev-pod-foreshock-api
 #View frontend container logs (dev)
 podman logs foreshock-dev-pod-foreshock-frontend
 
+#View API container logs (prod)
+podman logs foreshock-prod-pod-foreshock-api
+
+#View frontend container logs (prod)
+podman logs foreshock-prod-pod-foreshock-frontend
+
+#View postgres container logs (prod)
+podman logs foreshock-prod-pod-postgres-db
+
+#View kafka container logs (prod)
+podman logs foreshock-prod-pod-kafka
+
+#View ollama container logs (prod)
+podman logs foreshock-prod-pod-ollama
+
+#View cloudflared container logs (prod)
+podman logs foreshock-prod-pod-cloudflared
+
 #Access API container shell (dev)
 podman exec -it foreshock-dev-pod-foreshock-api bash
 
 #Access frontend container shell (dev)
 podman exec -it foreshock-dev-pod-foreshock-frontend sh
+
+#Access API container shell (prod)
+podman exec -it foreshock-prod-pod-foreshock-api bash
+
+#Access frontend container shell (prod)
+podman exec -it foreshock-prod-pod-foreshock-frontend sh
 
 #Check if required images are pulled
 podman images | grep -E "(node|python|pgvector|kafka|ollama|cloudflared)"

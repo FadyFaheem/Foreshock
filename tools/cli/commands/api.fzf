@@ -4,6 +4,12 @@ podman logs foreshock-dev-pod-foreshock-api
 #Follow API logs in real-time (dev)
 podman logs -f foreshock-dev-pod-foreshock-api
 
+#View API logs (prod)
+podman logs foreshock-prod-pod-foreshock-api
+
+#Follow API logs in real-time (prod)
+podman logs -f foreshock-prod-pod-foreshock-api
+
 #Test API health endpoint
 curl -s http://localhost:5000/health
 
