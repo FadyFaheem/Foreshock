@@ -27,6 +27,9 @@ from src.features import FEATURE_NAMES, extract_features_batch  # noqa: E402
 
 # Augmented (noisy/scaled) windows generated per class to improve robustness.
 N_AUGMENT_PER_CLASS = 50
+# Synthetic injected faults generated per fault class (periodic impulse trains),
+# so the model catches the kind of fault the Fault Lab generates.
+N_SYNTH_FAULT_PER_CLASS = 60
 
 
 def _augment_from(
@@ -57,6 +60,47 @@ def _augment_from(
             wins = np.stack([synthetic.random_augment(windows[i], rng) for i in chosen])
         else:
             wins = np.stack([synthetic.add_noise(windows[i], noise, rng) for i in chosen])
+        aug_X.append(extract_features_batch(wins, fs=config.DEFAULT_FS, rpms=rpms[chosen]))
+        aug_y.append(np.full(per_class, cond))
+    if not aug_X:
+        return np.empty((0, len(FEATURE_NAMES))), np.array([], dtype=str)
+    return np.vstack(aug_X), np.concatenate(aug_y)
+
+
+def _synthetic_faults_from(
+    windows: np.ndarray,
+    labels: np.ndarray,
+    rpms: np.ndarray,
+    indices: np.ndarray,
+    rng: np.random.Generator,
+    per_class: int = N_SYNTH_FAULT_PER_CLASS,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build feature rows by injecting periodic faults into HEALTHY windows.
+
+    Teaches the classifier the same synthesized-fault signature the Fault Lab
+    generates (a periodic impulse train at each fault's characteristic frequency),
+    so injected faults are caught and classified instead of called normal. Only
+    the given indices' healthy windows are used. Returns ``(X_aug, y_aug)``.
+    """
+    idx = np.asarray(indices)
+    healthy_pool = idx[labels[idx] == "normal"]
+    if healthy_pool.size == 0:
+        return np.empty((0, len(FEATURE_NAMES))), np.array([], dtype=str)
+    aug_X: list[np.ndarray] = []
+    aug_y: list[np.ndarray] = []
+    for cond in config.CONDITIONS:
+        if cond == "normal":
+            continue
+        chosen = rng.choice(healthy_pool, size=per_class, replace=True)
+        wins = np.stack(
+            [
+                synthetic.fault_window(
+                    windows[i], cond, rpm=float(rpms[i]), fs=config.DEFAULT_FS,
+                    severity=float(rng.uniform(0.8, 1.8)), rng=rng,
+                )
+                for i in chosen
+            ]
+        )
         aug_X.append(extract_features_batch(wins, fs=config.DEFAULT_FS, rpms=rpms[chosen]))
         aug_y.append(np.full(per_class, cond))
     if not aug_X:
@@ -140,11 +184,12 @@ def main() -> int:
     # random generator / real sensors produce) to the TRAINING split only.
     rng = np.random.default_rng(42)
     Xaug_tr, yaug_tr = _augment_from(windows, labels, rpms, train_idx, rng)
-    X_tr = np.vstack([X[train_idx], Xaug_tr])
-    y_tr = np.concatenate([labels[train_idx], yaug_tr])
+    Xsyn_tr, ysyn_tr = _synthetic_faults_from(windows, labels, rpms, train_idx, rng)
+    X_tr = np.vstack([X[train_idx], Xaug_tr, Xsyn_tr])
+    y_tr = np.concatenate([labels[train_idx], yaug_tr, ysyn_tr])
     print(
-        f"\nAugmentation: {len(train_idx)} real + {len(yaug_tr)} generated "
-        f"(noisy/scaled) = {len(y_tr)} training windows"
+        f"\nAugmentation: {len(train_idx)} real + {len(yaug_tr)} noisy "
+        f"+ {len(ysyn_tr)} synthetic injected faults = {len(y_tr)} training windows"
     )
 
     print("Training (held-out evaluation, augmented) ...")
@@ -170,9 +215,12 @@ def main() -> int:
 
     # Refit the final model on ALL data + augmentation, then save.
     print("\nRefitting final model on all data + augmentation ...")
-    Xaug_all, yaug_all = _augment_from(windows, labels, rpms, np.arange(len(labels)), rng)
+    all_idx = np.arange(len(labels))
+    Xaug_all, yaug_all = _augment_from(windows, labels, rpms, all_idx, rng)
+    Xsyn_all, ysyn_all = _synthetic_faults_from(windows, labels, rpms, all_idx, rng)
     final_model = model.train(
-        np.vstack([X, Xaug_all]), np.concatenate([labels, yaug_all])
+        np.vstack([X, Xaug_all, Xsyn_all]),
+        np.concatenate([labels, yaug_all, ysyn_all]),
     )
     saved = model.save(final_model)
     print(f"Saved model to {saved}")

@@ -4,12 +4,17 @@ import {
   Box,
   Button,
   Chip,
+  FormControl,
+  InputLabel,
   LinearProgress,
+  MenuItem,
   Paper,
+  Select,
   Slider,
   Stack,
   Typography,
 } from '@mui/material';
+import type { SelectChangeEvent } from '@mui/material';
 import {
   CartesianGrid,
   Line,
@@ -44,18 +49,30 @@ const SEV_ALERT: Record<string, AlertColor> = {
   high: 'error',
 };
 
+// "custom" = manually click impulses; the rest generate a realistic periodic
+// fault at that bearing frequency, which the classifier actually recognizes.
+const FAULT_OPTIONS = [
+  { value: 'outer_race', label: 'Outer race (BPFO)' },
+  { value: 'inner_race', label: 'Inner race (BPFI)' },
+  { value: 'ball', label: 'Ball (BSF)' },
+  { value: 'custom', label: 'Custom (click to place)' },
+];
+
 function msg(e: unknown): string {
   return e instanceof Error ? e.message : 'Request failed';
 }
 
 export default function FaultLabPage() {
   const [base, setBase] = useState<InjectBase | null>(null);
+  const [faultType, setFaultType] = useState('outer_race');
   const [points, setPoints] = useState<number[]>([]);
-  const [amplitude, setAmplitude] = useState(1.5);
+  const [severity, setSeverity] = useState(1.5);
   const [result, setResult] = useState<InjectDiagnoseResult | null>(null);
   const [status, setStatus] = useState<AIStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const isCustom = faultType === 'custom';
 
   const loadBase = () => {
     setError(null);
@@ -71,8 +88,14 @@ export default function FaultLabPage() {
     getAIStatus().then(setStatus).catch(() => undefined);
   }, []);
 
+  const onFaultTypeChange = (e: SelectChangeEvent) => {
+    setFaultType(e.target.value);
+    setResult(null);
+    setPoints([]);
+  };
+
   const addPoint = (state: ChartClick) => {
-    if (result || state?.activeLabel == null) return; // locked after analysis
+    if (!isCustom || result || state?.activeLabel == null) return;
     const idx = Math.round(Number(state.activeLabel));
     setPoints((prev) => (prev.includes(idx) ? prev : [...prev, idx].slice(0, 30)));
   };
@@ -82,9 +105,10 @@ export default function FaultLabPage() {
     setLoading(true);
     setError(null);
     try {
-      setResult(
-        await injectDiagnose(base.signal, points, amplitude, base.fs, base.rpm),
-      );
+      const req = isCustom
+        ? { signal: base.signal, fs: base.fs, rpm: base.rpm, points, amplitude: severity }
+        : { signal: base.signal, fs: base.fs, rpm: base.rpm, fault_type: faultType, severity };
+      setResult(await injectDiagnose(req));
     } catch (e) {
       setError(msg(e));
     } finally {
@@ -99,6 +123,8 @@ export default function FaultLabPage() {
       ? base.signal.map((v, i) => ({ i, x: v }))
       : [];
   const markedFreq = result ? Object.entries(result.marked_frequency)[0] : undefined;
+  const faultLabel = FAULT_OPTIONS.find((o) => o.value === faultType)?.label ?? faultType;
+  const analyzeDisabled = !base || loading || !!result || (isCustom && points.length === 0);
 
   return (
     <Stack spacing={2}>
@@ -107,10 +133,11 @@ export default function FaultLabPage() {
           Fault Lab
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-          Synthesize a bearing fault on a healthy signal, then let the agent analyze
-          it end to end. Click the waveform to place defect impulses, set their
-          severity, and run the RAG + LLM analysis &mdash; the AI points out the fault
-          and where it shows up in the envelope spectrum.
+          Synthesize a bearing fault on a healthy signal and let the agent analyze it
+          end to end. Generate a realistic fault of a chosen type (a periodic impulse
+          train at its characteristic frequency, which the model is trained to catch),
+          or switch to Custom to hand-place impulses. The AI points out the fault and
+          where it shows up in the envelope spectrum.
         </Typography>
 
         <Stack
@@ -118,35 +145,45 @@ export default function FaultLabPage() {
           spacing={2}
           alignItems={{ sm: 'center' }}
         >
-          <Button size="small" variant="outlined" onClick={loadBase} disabled={loading}>
-            New healthy signal
-          </Button>
+          <FormControl size="small" sx={{ minWidth: 220 }} disabled={loading || !!result}>
+            <InputLabel id="fault-type">Fault to generate</InputLabel>
+            <Select
+              labelId="fault-type"
+              label="Fault to generate"
+              value={faultType}
+              onChange={onFaultTypeChange}
+            >
+              {FAULT_OPTIONS.map((o) => (
+                <MenuItem key={o.value} value={o.value}>
+                  {o.label}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
           <Box sx={{ minWidth: 200 }}>
             <Typography variant="caption" color="text.secondary">
-              Defect severity: {amplitude.toFixed(1)}x
+              Severity: {severity.toFixed(1)}x
             </Typography>
             <Slider
               size="small"
-              value={amplitude}
+              value={severity}
               min={0.2}
               max={3}
               step={0.1}
               disabled={!!result || loading}
-              onChange={(_, v) => setAmplitude(v as number)}
+              onChange={(_, v) => setSeverity(v as number)}
             />
           </Box>
-          <Button
-            variant="contained"
-            onClick={onAnalyze}
-            disabled={!base || loading || !!result}
-          >
+          <Button variant="contained" onClick={onAnalyze} disabled={analyzeDisabled}>
             {loading
               ? 'Analyzing...'
-              : `Inject ${points.length} defect${points.length === 1 ? '' : 's'} & analyze`}
+              : isCustom
+                ? `Inject ${points.length} defect${points.length === 1 ? '' : 's'} & analyze`
+                : `Generate ${faultLabel} & analyze`}
           </Button>
-          {result && (
-            <Button size="small" onClick={loadBase}>
-              Reset
+          {(result || (isCustom && points.length > 0)) && (
+            <Button size="small" onClick={loadBase} disabled={loading}>
+              {result ? 'Reset' : 'Clear points'}
             </Button>
           )}
           {status && (
@@ -204,7 +241,7 @@ export default function FaultLabPage() {
 
       <Paper sx={{ p: 2 }}>
         <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
-          {result ? 'Synthesized signal (with injected defects)' : 'Healthy signal'}
+          {result ? 'Synthesized signal (with injected fault)' : 'Healthy signal'}
         </Typography>
         <Box sx={{ width: '100%', height: 240 }}>
           <ResponsiveContainer>
@@ -241,8 +278,9 @@ export default function FaultLabPage() {
         </Box>
         {!result && (
           <Typography variant="caption" color="text.secondary">
-            Tip: click a few spots to place defects, raise the severity, then analyze.
-            You can also analyze with no defects to confirm the AI calls it healthy.
+            {isCustom
+              ? 'Tip: click a few spots to place defects, set severity, then analyze. Isolated impulses are hard to classify - generate a typed fault for a clean detection.'
+              : `Generates a realistic ${faultLabel} fault: a periodic impulse train at its characteristic frequency. Raise severity for a stronger fault.`}
           </Typography>
         )}
       </Paper>

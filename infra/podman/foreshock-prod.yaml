@@ -106,10 +106,16 @@ spec:
     - name: foreshock-api
       image: docker.io/python:3.11-slim
       command: ["/bin/sh"]
-      # gthread (not the default sync worker): the /api/stream SSE endpoint holds a
-      # connection open for its whole life, which would pin a sync worker. Threads
-      # let long-lived streams + normal requests run concurrently (2 x 16 = 32).
-      args: ["-c", "cd /app/infra/api && pip install --quiet --no-cache-dir -r requirements.txt && exec gunicorn --bind 0.0.0.0:15000 --worker-class gthread --workers 2 --threads 16 --timeout 120 --access-logfile - --error-logfile - app:app"]
+      # Single gthread worker with many threads. Two reasons:
+      #  - SSE (/api/stream) holds a connection open for its whole life; threads let
+      #    long-lived streams and normal requests run concurrently. Sync workers
+      #    would pin one worker per stream and starve everything else - e.g. two open
+      #    streams leave no worker to serve "Start live feed" (POST /stream/simulate).
+      #  - The live feed's pub/sub (_subscribers) and Kafka consumer are in-process
+      #    singletons, so multiple worker processes would each run a duplicate
+      #    consumer and the producer could land on a different process than your SSE
+      #    connection, breaking the fan-out. One worker keeps it correct.
+      args: ["-c", "cd /app/infra/api && pip install --quiet --no-cache-dir -r requirements.txt && exec gunicorn --bind 0.0.0.0:15000 --worker-class gthread --workers 1 --threads 16 --timeout 120 --access-logfile - --error-logfile - app:app"]
       env:
         - name: FLASK_ENV
           value: production

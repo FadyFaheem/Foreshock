@@ -91,3 +91,51 @@ def random_augment(
     rng = rng or np.random.default_rng()
     noise = float(rng.uniform(0.1, max_noise))
     return add_noise(np.asarray(window, dtype=np.float64), noise, rng=rng)
+
+
+# Maps a fault class to the characteristic frequency whose periodic impacts
+# define it. "normal" has no fault frequency.
+FAULT_FREQ_KEY: dict[str, str] = {
+    "inner_race": "BPFI",
+    "outer_race": "BPFO",
+    "ball": "BSF",
+}
+
+
+def fault_window(
+    healthy: np.ndarray,
+    fault_type: str,
+    rpm: float = config.DEFAULT_RPM,
+    fs: int = config.DEFAULT_FS,
+    severity: float = 1.0,
+    rng: np.random.Generator | None = None,
+) -> np.ndarray:
+    """Turn a healthy window into a *realistic* synthetic bearing fault.
+
+    Unlike :func:`inject_impulses` (a few isolated bursts), this lays down a
+    PERIODIC train of damped impulses at the fault's characteristic frequency
+    (BPFO/BPFI/BSF) - the way a real defect rings on every ball pass. That builds
+    the envelope-spectrum peak the classifier keys on, so the generated fault is
+    actually caught and classified as ``fault_type``. ``severity`` scales the
+    impulse amplitude. A non-fault ``fault_type`` returns the window unchanged.
+    """
+    rng = rng or np.random.default_rng()
+    x = np.asarray(healthy, dtype=np.float64).reshape(-1).copy()
+    key = FAULT_FREQ_KEY.get(fault_type)
+    if key is None or severity <= 0:
+        return x
+    f_fault = config.fault_frequencies(rpm).get(key, 0.0)
+    if f_fault <= 0:
+        return x
+
+    period = fs / f_fault  # samples between successive impacts
+    n = x.shape[0]
+    # Start at a random phase and let the spacing jitter slightly so it is a real
+    # (imperfect) impulse train rather than a perfect comb.
+    points: list[int] = []
+    p = rng.uniform(0, period)
+    while p < n:
+        points.append(int(p))
+        p += period * rng.uniform(0.94, 1.06)
+    amplitude = float(severity) * rng.uniform(0.7, 1.1)
+    return inject_impulses(x, points, amplitude=amplitude, fs=fs)

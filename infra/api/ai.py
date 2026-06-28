@@ -111,13 +111,22 @@ def inject_diagnose():
     sig = np.asarray(body.get("signal") or [], dtype=np.float64).reshape(-1)
     points = [int(p) for p in (body.get("points") or [])]
     amplitude = float(body.get("amplitude", 1.0))
+    fault_type = body.get("fault_type") or ""
+    severity = float(body.get("severity", amplitude))
     if sig.shape[0] < config.WINDOW_SIZE:
         return jsonify(error=f"signal must have >= {config.WINDOW_SIZE} samples"), 400
     fs = int(body.get("fs", config.DEFAULT_FS))
     rpm = float(body.get("rpm", config.DEFAULT_RPM))
     asset = body.get("asset") or "fault-lab-01"
 
-    modified = synthetic.inject_impulses(sig, points, amplitude=amplitude, fs=fs)
+    # Two modes. "Generate a realistic fault" lays a periodic impulse train at the
+    # chosen fault's characteristic frequency (what the classifier actually keys
+    # on); "manual" injects isolated bursts at clicked spots.
+    if fault_type in synthetic.FAULT_FREQ_KEY:
+        modified = synthetic.fault_window(sig, fault_type, rpm=rpm, fs=fs, severity=severity)
+        points = []  # a generated train, not user-placed points
+    else:
+        modified = synthetic.inject_impulses(sig, points, amplitude=amplitude, fs=fs)
     try:
         run = agent.run_agent(signal=modified, rpm=rpm, fs=fs, asset=asset)
     except ValueError as exc:
@@ -129,6 +138,7 @@ def inject_diagnose():
     key = _FAULT_FREQ_KEY.get(run["diagnosis"]["condition"])
     return jsonify(
         agent=run,
+        requested_fault=fault_type or None,
         injected_points=points,
         amplitude=amplitude,
         # Only the detected fault's frequency, so the UI marks the one the AI saw.
