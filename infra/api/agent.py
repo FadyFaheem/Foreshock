@@ -330,17 +330,14 @@ def _retrieve(
         return [], None
 
 
-# Promoting a classifier-"normal" result to an "unclassified anomaly" needs more
-# than the autoencoder firing (it is calibrated to its own training data and can
-# over-fire). We require genuine impulsiveness - the signature of a one-off impact;
-# ``kurtosis`` here is excess kurtosis (~0 for healthy). A clearly impulsive signal
-# is flagged even when the classifier is confident (it is simply wrong); a mildly
-# impulsive one only when the classifier is also unsure it is healthy.
-_ANOMALY_GATE_CONF = 0.75
-_KURTOSIS_ANOMALY = 2.0   # mild-impulsiveness floor (below this, never an anomaly)
-_KURTOSIS_STRONG = 3.5    # clearly impulsive -> flag regardless of the classifier
-_CREST_ANOMALY = 5.5
-_CREST_STRONG = 8.0
+# An "unclassified anomaly" = the classifier says normal, but the health monitor
+# flags the window AND it is genuinely impulsive - the signature of a one-off
+# impact. ``kurtosis`` is excess kurtosis (~0 for a clean signal), so requiring
+# impulsiveness keeps a healthy signal from ever being flagged, regardless of how
+# (over-) confident the classifier is. We do NOT gate on classifier confidence: it
+# cannot classify isolated impacts, so its confidence is meaningless here.
+_KURTOSIS_ANOMALY = 1.5
+_CREST_ANOMALY = 5.0
 
 
 def _is_unclassified_anomaly(
@@ -350,13 +347,10 @@ def _is_unclassified_anomaly(
     if analysis["condition"] != "normal" or not (health and health.get("caught")):
         return False
     feat = analysis["features"]
-    kurt = feat.get("kurtosis", 0.0)
-    crest = feat.get("crest_factor", 0.0)
-    if kurt < _KURTOSIS_ANOMALY and crest < _CREST_ANOMALY:
-        return False  # not impulsive -> trust healthy (never flag a clean signal)
-    if kurt >= _KURTOSIS_STRONG or crest >= _CREST_STRONG:
-        return True  # clearly impulsive -> an anomaly even if the classifier is sure
-    return analysis["confidence"] < _ANOMALY_GATE_CONF
+    return (
+        feat.get("kurtosis", 0.0) >= _KURTOSIS_ANOMALY
+        or feat.get("crest_factor", 0.0) >= _CREST_ANOMALY
+    )
 
 
 def _resolve_condition(
