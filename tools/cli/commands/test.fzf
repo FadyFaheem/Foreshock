@@ -1,0 +1,32 @@
+#Run all Python tests (engine + API)
+python -m pytest -q
+
+#Run engine feature tests
+python -m pytest tests/ -v
+
+#Run API tests only
+cd infra/api && python -m pytest tests/ -v
+
+#Run all frontend tests
+cd frontend && npx vitest run
+
+#Run frontend tests in watch mode
+cd frontend && npx vitest
+
+#Run frontend tests with coverage
+cd frontend && npx vitest run --coverage
+
+#Run ALL tests (Python + Frontend)
+python -m pytest -q && cd frontend && npx vitest run
+
+#Seed the RAG knowledge base
+python scripts/seed_kb.py
+
+#Run the LLM/RAG eval suite
+python scripts/run_evals.py
+
+#Install dev (test) dependencies
+pip install -r requirements-dev.txt
+
+#Install frontend dependencies
+cd frontend && npm install

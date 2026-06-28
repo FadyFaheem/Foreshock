@@ -1,0 +1,15 @@
+# Runtime dependencies for the Foreshock engine (src/) and Flask API.
+# Pinned to versions with Python 3.11-3.14 wheels on PyPI.
+numpy>=2.3.2
+scipy>=1.16.1
+scikit-learn>=1.8
+joblib>=1.4
+flask>=3.0
+flask-cors>=4.0
+gunicorn>=21.2
+# RAG store (Postgres + pgvector) and Ollama HTTP client.
+psycopg2-binary>=2.9
+pgvector>=0.3
+requests>=2.32
+# v3 live sensor feed.
+kafka-python>=2.0

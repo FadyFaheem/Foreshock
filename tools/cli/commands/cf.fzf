@@ -1,0 +1,35 @@
+#Cloudflare Tunnel login (run on host)
+cloudflared tunnel login
+
+#Create cloudflare tunnel for dev
+cloudflared tunnel create foreshock-dev
+
+#Create cloudflare tunnel for prod
+cloudflared tunnel create foreshock-prod
+
+#List cloudflare tunnels
+cloudflared tunnel list
+
+#View cloudflared logs (dev)
+podman logs foreshock-dev-pod-cloudflared
+
+#Follow cloudflared logs in real-time (dev)
+podman logs -f foreshock-dev-pod-cloudflared
+
+#Restart cloudflared container (dev)
+podman restart foreshock-dev-pod-cloudflared
+
+#Access cloudflared container shell (dev)
+podman exec -it foreshock-dev-pod-cloudflared sh
+
+#Route DNS for dev tunnel
+read -p "Enter dev hostname (e.g., dev-foreshock.faheemlabs.com): " hostname && cloudflared tunnel route dns foreshock-dev "$hostname"
+
+#Route DNS for prod tunnel
+read -p "Enter prod hostname (e.g., foreshock.faheemlabs.com): " hostname && cloudflared tunnel route dns foreshock-prod "$hostname"
+
+#Delete dev tunnel
+cloudflared tunnel delete foreshock-dev
+
+#Delete prod tunnel
+cloudflared tunnel delete foreshock-prod

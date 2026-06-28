@@ -1,0 +1,35 @@
+# Cloudflare Tunnel configuration for the Foreshock prod environment.
+# Exposes the production environment at foreshock.faheemlabs.com
+#
+# Setup:
+#   1. cloudflared tunnel login
+#   2. cloudflared tunnel create foreshock-prod
+#   3. Copy the credentials JSON to infra/cloudflared/creds/<TUNNEL_UUID>.json
+#   4. Replace the tunnel UUID below with your actual tunnel UUID
+#   5. Create the DNS record:
+#      cloudflared tunnel route dns foreshock-prod foreshock.faheemlabs.com
+
+tunnel: d7c13940-723f-46ff-9cdb-d52e7af249ed
+credentials-file: /etc/cloudflared/creds/d7c13940-723f-46ff-9cdb-d52e7af249ed.json
+
+ingress:
+  # API requests: route /api/... to the Flask backend on port 5000
+  - hostname: foreshock.faheemlabs.com
+    path: "^/api/.*"
+    service: http://localhost:5000
+    originRequest:
+      noTLSVerify: true
+
+  # Health check endpoint on the API
+  - hostname: foreshock.faheemlabs.com
+    path: /health
+    service: http://localhost:5000
+
+  # All other traffic goes to the built frontend on port 80
+  - hostname: foreshock.faheemlabs.com
+    service: http://localhost:80
+    originRequest:
+      noTLSVerify: true
+
+  # Catch-all rule (required by cloudflared)
+  - service: http_status:404

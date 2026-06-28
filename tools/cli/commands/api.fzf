@@ -1,0 +1,26 @@
+#View API logs (dev)
+podman logs foreshock-dev-pod-foreshock-api
+
+#Follow API logs in real-time (dev)
+podman logs -f foreshock-dev-pod-foreshock-api
+
+#Test API health endpoint
+curl -s http://localhost:5000/health
+
+#List sample signals
+curl -s http://localhost:5000/api/samples
+
+#Predict a built-in sample (normal)
+curl -s -X POST http://localhost:5000/api/predict -F "sample_id=normal"
+
+#Restart API container only (dev)
+podman restart foreshock-dev-pod-foreshock-api
+
+#API container resource usage (dev)
+podman stats foreshock-dev-pod-foreshock-api --no-stream
+
+#Inspect API container (dev)
+podman inspect foreshock-dev-pod-foreshock-api
+
+#Open a Python shell inside the API container (dev)
+podman exec -it foreshock-dev-pod-foreshock-api python

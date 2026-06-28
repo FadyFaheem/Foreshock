@@ -1,0 +1,169 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: foreshock-prod-pod
+spec:
+  # Host network mode ensures containers bind to 0.0.0.0 and are reachable by
+  # the tunnel; fixes Podman binding only to 127.0.0.1.
+  hostNetwork: true
+  dnsPolicy: "None"
+  dnsConfig:
+    nameservers:
+      - "8.8.8.8"
+      - "8.8.4.4"
+      - "1.1.1.1"
+    searches:
+      - "."
+    options:
+      - name: ndots
+        value: "2"
+      - name: edns0
+  restartPolicy: OnFailure
+  containers:
+    # PostgreSQL + pgvector. infra/database is the init dir (schema on first start).
+    - name: postgres-db
+      image: docker.io/pgvector/pgvector:pg16
+      env:
+        - name: POSTGRES_USER
+          value: postgres
+        # TODO: change this and the matching DB_PASSWORD before any non-local deploy.
+        - name: POSTGRES_PASSWORD
+          value: CHANGE-ME-postgres-password
+        - name: POSTGRES_DB
+          value: foreshock
+      volumeMounts:
+        - name: pgdata
+          mountPath: /var/lib/postgresql/data
+        - name: db-init
+          mountPath: /docker-entrypoint-initdb.d
+          readOnly: true
+
+    # Kafka broker (KRaft, single node) for the v3 live sensor feed.
+    - name: kafka
+      image: docker.io/apache/kafka:3.9.0
+      env:
+        - name: KAFKA_NODE_ID
+          value: "1"
+        - name: KAFKA_PROCESS_ROLES
+          value: broker,controller
+        - name: KAFKA_LISTENERS
+          value: PLAINTEXT://localhost:9092,CONTROLLER://localhost:9093
+        - name: KAFKA_ADVERTISED_LISTENERS
+          value: PLAINTEXT://localhost:9092
+        - name: KAFKA_CONTROLLER_LISTENER_NAMES
+          value: CONTROLLER
+        - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
+          value: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+        - name: KAFKA_CONTROLLER_QUORUM_VOTERS
+          value: "1@localhost:9093"
+        - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+          value: "1"
+        - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+          value: "1"
+        - name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
+          value: "1"
+        - name: KAFKA_HEAP_OPTS
+          value: "-Xmx512M -Xms256M"
+
+    # Flask API via gunicorn. Repo root mounted read-only at /app.
+    - name: foreshock-api
+      image: docker.io/python:3.11-slim
+      command: ["/bin/sh"]
+      args: ["-c", "cd /app/infra/api && pip install --quiet --no-cache-dir -r requirements.txt && exec gunicorn --bind 0.0.0.0:5000 --workers 2 --timeout 120 --access-logfile - --error-logfile - app:app"]
+      env:
+        - name: FLASK_ENV
+          value: production
+        - name: PORT
+          value: "5000"
+        - name: PYTHONPATH
+          value: /app
+        - name: DB_HOST
+          value: localhost
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_NAME
+          value: foreshock
+        - name: DB_USER
+          value: postgres
+        # TODO: change this and POSTGRES_PASSWORD below before any non-local deploy.
+        - name: DB_PASSWORD
+          value: CHANGE-ME-postgres-password
+        # hostNetwork: the API reaches host Ollama on localhost.
+        - name: OLLAMA_HOST
+          value: http://localhost:11434
+        - name: KAFKA_BOOTSTRAP
+          value: localhost:9092
+      volumeMounts:
+        - name: project-root
+          mountPath: /app
+          readOnly: true
+        - name: host-resolv
+          mountPath: /etc/resolv.conf
+          readOnly: true
+
+    # React Frontend - build then serve static files on port 80. The built app
+    # calls /api on the same origin; cloudflared routes /api/* to the API.
+    - name: foreshock-frontend
+      image: docker.io/node:20-alpine
+      command: ["/bin/sh"]
+      args: ["-c", "cd /app && npm install && npm run build && npx -y serve -s dist -l 80"]
+      env:
+        - name: HOST
+          value: "0.0.0.0"
+        - name: PORT
+          value: "80"
+      volumeMounts:
+        - name: frontend-code
+          mountPath: /app
+        - name: host-resolv
+          mountPath: /etc/resolv.conf
+          readOnly: true
+
+    # Cloudflare Tunnel - exposes the prod environment.
+    # Setup: see infra/cloudflared/config.prod.yml.
+    - name: cloudflared
+      image: cloudflare/cloudflared:latest
+      command: ["cloudflared"]
+      args: ["tunnel", "--config", "/etc/cloudflared/config.prod.yml", "run"]
+      securityContext:
+        runAsUser: 0
+      volumeMounts:
+        - name: cloudflared-config
+          mountPath: /etc/cloudflared
+
+  volumes:
+    # TODO: update these absolute paths to the project location on the prod host.
+    - name: project-root
+      hostPath:
+        path: /home/ubuntu/Foreshock
+        type: Directory
+    - name: frontend-code
+      hostPath:
+        path: /home/ubuntu/Foreshock/frontend
+        type: Directory
+    - name: host-resolv
+      hostPath:
+        path: /etc/resolv.conf
+        type: File
+    - name: cloudflared-config
+      hostPath:
+        path: /home/ubuntu/Foreshock/infra/cloudflared
+        type: Directory
+    - name: pgdata
+      persistentVolumeClaim:
+        claimName: foreshock-prod-db
+    - name: db-init
+      hostPath:
+        path: /home/ubuntu/Foreshock/infra/database
+        type: Directory
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: foreshock-prod-db
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi

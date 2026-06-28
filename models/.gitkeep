@@ -1,0 +1,2 @@
+# Trained model (model.joblib) and bundled demo samples (samples.npz) are written
+# here by scripts/train.py. Committing them lets the web app run from a clone.

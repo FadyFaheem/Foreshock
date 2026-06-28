@@ -1,0 +1,17 @@
+#Open a psql shell (pod)
+podman exec -it foreshock-dev-pod-postgres-db psql -U postgres -d foreshock
+
+#List tables (pod)
+podman exec -it foreshock-dev-pod-postgres-db psql -U postgres -d foreshock -c "\dt"
+
+#Knowledge base counts by fault type (pod)
+podman exec -it foreshock-dev-pod-postgres-db psql -U postgres -d foreshock -c "SELECT fault_type, COUNT(*) FROM knowledge_base GROUP BY fault_type;"
+
+#Recent diagnoses (pod)
+podman exec -it foreshock-dev-pod-postgres-db psql -U postgres -d foreshock -c "SELECT id, asset, predicted_condition, severity, created_at FROM diagnoses ORDER BY created_at DESC LIMIT 10;"
+
+#Recent LLM calls (pod)
+podman exec -it foreshock-dev-pod-postgres-db psql -U postgres -d foreshock -c "SELECT operation, model, round(latency_ms) AS ms, total_tokens FROM llm_calls ORDER BY created_at DESC LIMIT 10;"
+
+#Migration status (pod)
+podman exec -it foreshock-dev-pod-postgres-db psql -U postgres -d foreshock -c "SELECT version, applied_at FROM schema_migrations ORDER BY version;"

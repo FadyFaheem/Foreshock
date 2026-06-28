@@ -1,0 +1,35 @@
+# Cloudflare Tunnel configuration for the Foreshock dev environment.
+# Exposes the local dev environment at dev-foreshock.faheemlabs.com
+#
+# Setup:
+#   1. cloudflared tunnel login
+#   2. cloudflared tunnel create foreshock-dev
+#   3. Copy the credentials JSON to infra/cloudflared/creds/<TUNNEL_UUID>.json
+#   4. Replace the tunnel UUID below with your actual tunnel UUID
+#   5. Create the DNS record:
+#      cloudflared tunnel route dns foreshock-dev dev-foreshock.faheemlabs.com
+
+tunnel: 5f591a2a-db0f-4b1a-8134-ac180a92a713
+credentials-file: /etc/cloudflared/creds/5f591a2a-db0f-4b1a-8134-ac180a92a713.json
+
+ingress:
+  # API requests: route /api/... to the Flask backend on port 5000
+  - hostname: dev-foreshock.faheemlabs.com
+    path: "^/api/.*"
+    service: http://localhost:5000
+    originRequest:
+      noTLSVerify: true
+
+  # Health check endpoint on the API
+  - hostname: dev-foreshock.faheemlabs.com
+    path: /health
+    service: http://localhost:5000
+
+  # All other traffic goes to the Vite dev frontend on port 3000
+  - hostname: dev-foreshock.faheemlabs.com
+    service: http://localhost:3000
+    originRequest:
+      noTLSVerify: true
+
+  # Catch-all rule (required by cloudflared)
+  - service: http_status:404

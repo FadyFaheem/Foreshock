@@ -1,0 +1,56 @@
+#Pre-pull required images
+podman pull docker.io/library/node:20-alpine && podman pull docker.io/library/python:3.11-slim && podman pull docker.io/pgvector/pgvector:pg16 && podman pull docker.io/cloudflare/cloudflared:latest
+
+#Seed the knowledge base in the dev pod
+podman exec foreshock-dev-pod-foreshock-api python /app/scripts/seed_kb.py
+
+#Start foreshock-dev pod
+podman play kube infra/podman/foreshock-dev.yaml
+
+#Start foreshock-prod pod
+podman play kube infra/podman/foreshock-prod.yaml
+
+#Stop foreshock-dev pod
+podman pod stop foreshock-dev-pod
+
+#Stop foreshock-prod pod
+podman pod stop foreshock-prod-pod
+
+#Delete foreshock-dev pod
+podman pod rm -f foreshock-dev-pod
+
+#Delete foreshock-prod pod
+podman pod rm -f foreshock-prod-pod
+
+#Rebuild foreshock-dev pod
+podman pod rm -f foreshock-dev-pod && podman play kube infra/podman/foreshock-dev.yaml
+
+#Rebuild foreshock-prod pod
+podman pod rm -f foreshock-prod-pod && podman play kube infra/podman/foreshock-prod.yaml
+
+#Get pod status
+podman pod ps
+
+#List containers in dev pod
+podman ps --filter pod=foreshock-dev-pod
+
+#View dev pod logs
+podman pod logs foreshock-dev-pod
+
+#View API container logs (dev)
+podman logs foreshock-dev-pod-foreshock-api
+
+#View frontend container logs (dev)
+podman logs foreshock-dev-pod-foreshock-frontend
+
+#Access API container shell (dev)
+podman exec -it foreshock-dev-pod-foreshock-api bash
+
+#Access frontend container shell (dev)
+podman exec -it foreshock-dev-pod-foreshock-frontend sh
+
+#Check if required images are pulled
+podman images | grep -E "(node|python|cloudflared)"
+
+#Fix TLS certificate issues - configure registry to skip TLS verification
+mkdir -p ~/.config/containers && printf '[[registry]]\nlocation = "docker.io"\ninsecure = true\n' > ~/.config/containers/registries.conf && echo "Registry configured. You may need to restart Podman."

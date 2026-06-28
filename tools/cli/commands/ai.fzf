@@ -1,0 +1,29 @@
+#AI subsystem status (db / llm / kb)
+curl -s http://localhost:8000/api/ai/status
+
+#Diagnose a sample (RAG + LLM)
+curl -s -X POST http://localhost:8000/api/diagnose -F "sample_id=inner_race"
+
+#Run the agentic workflow (ball)
+curl -s -X POST http://localhost:8000/api/agent -F "sample_id=ball"
+
+#AI observability metrics
+curl -s http://localhost:8000/api/observability
+
+#Latest eval report
+curl -s http://localhost:8000/api/evals
+
+#Run the eval suite now (via API)
+curl -s -X POST http://localhost:8000/api/evals/run
+
+#Recent work orders
+curl -s http://localhost:8000/api/work_orders
+
+#Seed the knowledge base in the pod
+podman exec foreshock-dev-pod-foreshock-api python /app/scripts/seed_kb.py
+
+#Run evals (host CLI)
+python scripts/run_evals.py
+
+#Seed the knowledge base (host CLI)
+python scripts/seed_kb.py

@@ -1,0 +1,195 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: foreshock-dev-pod
+spec:
+  # DNS configuration - ensures DNS resolution works properly
+  dnsPolicy: "None"
+  dnsConfig:
+    nameservers:
+      - "8.8.8.8"      # Google DNS
+      - "8.8.4.4"      # Google DNS backup
+      - "1.1.1.1"      # Cloudflare DNS
+    searches:
+      - "."
+    options:
+      - name: ndots
+        value: "2"
+      - name: edns0
+  # Restart container if it crashes (non-zero exit).
+  restartPolicy: OnFailure
+  containers:
+    # PostgreSQL + pgvector. infra/database is mounted as the init dir, so the
+    # schema is created on first start. Intra-pod only (no host port).
+    - name: postgres-db
+      image: docker.io/pgvector/pgvector:pg16
+      env:
+        - name: POSTGRES_USER
+          value: postgres
+        - name: POSTGRES_PASSWORD
+          value: postgres
+        - name: POSTGRES_DB
+          value: foreshock
+      volumeMounts:
+        - name: pgdata
+          mountPath: /var/lib/postgresql/data
+        - name: db-init
+          mountPath: /docker-entrypoint-initdb.d
+          readOnly: true
+
+    # Kafka broker (KRaft, single node) for the v3 live sensor feed.
+    - name: kafka
+      image: docker.io/apache/kafka:3.9.0
+      env:
+        - name: KAFKA_NODE_ID
+          value: "1"
+        - name: KAFKA_PROCESS_ROLES
+          value: broker,controller
+        - name: KAFKA_LISTENERS
+          value: PLAINTEXT://localhost:9092,CONTROLLER://localhost:9093
+        - name: KAFKA_ADVERTISED_LISTENERS
+          value: PLAINTEXT://localhost:9092
+        - name: KAFKA_CONTROLLER_LISTENER_NAMES
+          value: CONTROLLER
+        - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
+          value: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+        - name: KAFKA_CONTROLLER_QUORUM_VOTERS
+          value: "1@localhost:9093"
+        - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+          value: "1"
+        - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+          value: "1"
+        - name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
+          value: "1"
+        - name: KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS
+          value: "0"
+        - name: KAFKA_HEAP_OPTS
+          value: "-Xmx512M -Xms256M"
+      ports:
+        - containerPort: 9092
+          hostPort: 9092
+
+    # Flask API (thin layer over the src/ engine). Installs deps on start and
+    # serves the dev server. The repo root is mounted read-only at /app so the
+    # API can import src/ and load models/.
+    - name: foreshock-api
+      image: docker.io/python:3.11-slim
+      command: ["/bin/sh"]
+      args: ["-c", "cd /app/infra/api && pip install --quiet --no-cache-dir -r requirements.txt && exec python app.py"]
+      env:
+        - name: FLASK_ENV
+          value: development
+        - name: PORT
+          value: "5000"
+        - name: PYTHONPATH
+          value: /app
+        # Postgres + pgvector (the postgres-db container in this pod).
+        - name: DB_HOST
+          value: localhost
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_NAME
+          value: foreshock
+        - name: DB_USER
+          value: postgres
+        - name: DB_PASSWORD
+          value: postgres
+        # Local LLM on the host (Ollama must listen on 0.0.0.0:11434).
+        - name: OLLAMA_HOST
+          value: http://host.containers.internal:11434
+        # Kafka broker (the kafka container in this pod).
+        - name: KAFKA_BOOTSTRAP
+          value: localhost:9092
+      ports:
+        # Host port 8000 (not 5000) because macOS reserves 5000 for AirPlay.
+        # The container still listens on 5000, so intra-pod proxy + cloudflared
+        # (which target localhost:5000) are unchanged.
+        - containerPort: 5000
+          hostPort: 8000
+      volumeMounts:
+        - name: project-root
+          mountPath: /app
+          readOnly: true
+        - name: host-resolv
+          mountPath: /etc/resolv.conf
+          readOnly: true
+
+    # React Frontend (Vite dev server). Proxies /api to the API container,
+    # which shares this pod's network (localhost:5000).
+    - name: foreshock-frontend
+      image: docker.io/node:20-alpine
+      command: ["/bin/sh"]
+      args: ["-c", "cd /app && npm install && npm run dev -- --host 0.0.0.0 --port 3000"]
+      env:
+        - name: HOST
+          value: "0.0.0.0"
+        - name: PORT
+          value: "3000"
+        - name: VITE_API_PROXY
+          value: http://localhost:5000
+        # Allow the dev tunnel hostname through Vite's host check.
+        - name: VITE_ALLOWED_HOSTS
+          value: dev-foreshock.faheemlabs.com
+        # Bind-mounted source in the VM needs polling for hot reload.
+        - name: VITE_USE_POLLING
+          value: "1"
+      ports:
+        - containerPort: 3000
+          hostPort: 3000
+      volumeMounts:
+        - name: frontend-code
+          mountPath: /app
+        - name: host-resolv
+          mountPath: /etc/resolv.conf
+          readOnly: true
+
+    # Cloudflare Tunnel - exposes the dev environment via cloudflared.
+    # No inbound ports needed; cloudflared dials out to Cloudflare's edge.
+    # Setup: see infra/cloudflared/config.yml for one-time instructions.
+    - name: cloudflared
+      image: cloudflare/cloudflared:latest
+      command: ["cloudflared"]
+      args: ["tunnel", "--config", "/etc/cloudflared/config.yml", "run"]
+      securityContext:
+        runAsUser: 0
+      volumeMounts:
+        - name: cloudflared-config
+          mountPath: /etc/cloudflared
+
+  volumes:
+    # Repo root (read-only): gives the API container src/, infra/api/, models/.
+    - name: project-root
+      hostPath:
+        path: /Users/fadyfaheem/Documents/GitHub/Foreshock
+        type: Directory
+    # Frontend (read-write): the container runs `npm install` here.
+    - name: frontend-code
+      hostPath:
+        path: /Users/fadyfaheem/Documents/GitHub/Foreshock/frontend
+        type: Directory
+    - name: host-resolv
+      hostPath:
+        path: /etc/resolv.conf
+        type: File
+    - name: cloudflared-config
+      hostPath:
+        path: /Users/fadyfaheem/Documents/GitHub/Foreshock/infra/cloudflared
+        type: Directory
+    - name: pgdata
+      persistentVolumeClaim:
+        claimName: foreshock-dev-db
+    - name: db-init
+      hostPath:
+        path: /Users/fadyfaheem/Documents/GitHub/Foreshock/infra/database
+        type: Directory
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: foreshock-dev-db
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
