@@ -235,6 +235,14 @@ export default function FaultLabPage() {
                 label={`evidence: ${markedFreq[0]} ≈ ${markedFreq[1]} Hz`}
               />
             )}
+            {!markedFreq && diagnosis.health?.caught && (
+              <Chip
+                size="small"
+                color="error"
+                variant="outlined"
+                label={`anomaly: error ${diagnosis.health.error.toFixed(2)} > ${diagnosis.health.threshold.toFixed(2)}`}
+              />
+            )}
           </Stack>
         </Alert>
       )}

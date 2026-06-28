@@ -149,12 +149,23 @@ export interface Source {
   score: number;
 }
 
+export interface HealthCheck {
+  error: number;
+  mean_error: number;
+  threshold: number;
+  caught: boolean;
+  score: number | null;
+}
+
 export interface Diagnosis {
   id?: number;
   sample_id?: string;
   asset: string;
   condition: string;
   label: string;
+  // The raw classifier label before the anomaly override ("normal" for a one-off
+  // anomaly the health monitor caught).
+  classifier_condition?: string;
   confidence: number;
   rpm: number;
   rms?: number;
@@ -166,6 +177,8 @@ export interface Diagnosis {
   sources: Source[];
   used_llm: boolean;
   probabilities: Record<string, number>;
+  anomaly?: boolean;
+  health?: HealthCheck | null;
 }
 
 export interface AgentStep {

@@ -103,7 +103,39 @@ def _analyze(signal: np.ndarray, fs: int, rpm: float) -> dict[str, Any]:
         "features": feat,
         "n_windows": int(windows.shape[0]),
         "rpm": rpm,
+        "health": _health_verdict(X),
     }
+
+
+def _health_verdict(X: np.ndarray) -> dict[str, Any] | None:
+    """Unsupervised anomaly check via the health autoencoder (None if untrained).
+
+    Reconstruction error rises for vibration that doesn't resemble the healthy
+    training data - including one-off impacts the 4-class classifier can't name.
+    Uses the max over windows so a single anomalous window still trips the alarm.
+    """
+    try:
+        from health_routes import get_health_model
+
+        hm = get_health_model()
+    except Exception:  # noqa: BLE001
+        hm = None
+    if hm is None:
+        return None
+    try:
+        errs = np.asarray(hm.errors(X), dtype=float)
+        error = float(errs.max())
+        threshold = float(hm.threshold)
+        return {
+            "error": error,
+            "mean_error": float(errs.mean()),
+            "threshold": threshold,
+            "caught": bool(error > threshold),
+            "score": float(error / threshold) if threshold else None,
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Health check failed: %s", exc)
+        return None
 
 
 def _severity(condition: str, confidence: float, feat: dict[str, float]) -> str:
@@ -115,6 +147,53 @@ def _severity(condition: str, confidence: float, feat: dict[str, float]) -> str:
     if confidence >= 0.7:
         return "medium"
     return "low"
+
+
+def _anomaly_severity(score: float | None) -> str:
+    """Severity from how far the reconstruction error exceeds the alarm threshold."""
+    if not score:
+        return "medium"
+    if score >= 3.0:
+        return "high"
+    if score >= 1.5:
+        return "medium"
+    return "low"
+
+
+def _anomaly_diagnosis(health: dict[str, Any] | None) -> dict[str, Any]:
+    """Templated diagnosis for an anomaly the classifier could not name.
+
+    Deterministic (no LLM): the health monitor only knows "this isn't healthy",
+    so we must not invent a specific fault type the evidence doesn't support.
+    """
+    score = (health or {}).get("score")
+    sev = _anomaly_severity(score)
+    err = (health or {}).get("error")
+    thr = (health or {}).get("threshold")
+    detail = (
+        f"reconstruction error {err:.3f} vs threshold {thr:.3f}"
+        if err is not None and thr is not None
+        else "elevated reconstruction error"
+    )
+    return {
+        "summary": (
+            "Unclassified anomaly: the health monitor flagged abnormal vibration "
+            f"({detail}) that does not match a known bearing-fault frequency "
+            "(BPFO/BPFI/BSF). This is typical of a one-off impact or an early, "
+            "still-incipient defect - worth investigating before clearing."
+        ),
+        "severity": sev,
+        "likely_cause": (
+            "Transient/impulsive anomaly without a periodic bearing-fault signature."
+        ),
+        "recommended_actions": [
+            "Inspect the asset for looseness, external impacts, or sensor faults.",
+            "Capture a longer recording and re-analyze to see if a fault frequency emerges.",
+            "Trend the health indicator; escalate if reconstruction error keeps rising.",
+        ],
+        "priority": _priority(sev),
+        "used_llm": False,
+    }
 
 
 def _build_user_prompt(
@@ -150,8 +229,14 @@ def _generate(
     feat: dict[str, float],
     rpm: float,
     docs: list[dict[str, Any]],
+    health: dict[str, Any] | None = None,
+    unclassified: bool = False,
 ) -> dict[str, Any]:
     """Produce the grounded diagnosis (LLM if available, else templated)."""
+    if unclassified:
+        # Classifier said normal but the health monitor flagged an anomaly: report
+        # it as an unnamed anomaly rather than a (non-existent) specific fault.
+        return _anomaly_diagnosis(health)
     severity = _severity(condition, confidence, feat)
     retrieval_score = docs[0]["score"] if docs else None
 
@@ -211,7 +296,12 @@ def _sources(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def _retrieval_query(condition: str) -> str:
+def _retrieval_query(condition: str, unclassified: bool = False) -> str:
+    if unclassified:
+        return (
+            "bearing vibration anomaly detection, envelope analysis, rising RMS and "
+            "kurtosis, severity assessment and maintenance priority"
+        )
     if condition == "normal":
         return (
             "healthy bearing baseline vibration signature, low RMS and kurtosis, "
@@ -223,15 +313,59 @@ def _retrieval_query(condition: str) -> str:
     )
 
 
-def _retrieve(condition: str) -> tuple[list[dict[str, Any]], float | None]:
+def _retrieve(
+    condition: str, unclassified: bool = False
+) -> tuple[list[dict[str, Any]], float | None]:
     try:
         # Focus retrieval on the predicted condition (+ general background) so the
-        # context never contains a different fault's document.
-        docs = rag.retrieve(_retrieval_query(condition), top_k=4, prefer=condition)
+        # context never contains a different fault's document. For an unclassified
+        # anomaly, pull general envelope/severity guidance instead.
+        prefer = "general" if unclassified else condition
+        docs = rag.retrieve(
+            _retrieval_query(condition, unclassified), top_k=4, prefer=prefer
+        )
         return docs, (docs[0]["score"] if docs else None)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Retrieval failed: %s", exc)
         return [], None
+
+
+def _assemble_diagnosis(
+    sample_id: str | None,
+    asset: str,
+    analysis: dict[str, Any],
+    docs: list[dict[str, Any]],
+    gen: dict[str, Any],
+    health: dict[str, Any] | None,
+    unclassified: bool,
+) -> dict[str, Any]:
+    """Build the diagnosis dict shared by diagnose() and run_agent()."""
+    cond = analysis["condition"]
+    if unclassified:
+        disp_cond, disp_label = "anomaly", "Unclassified anomaly"
+        score = (health or {}).get("score") or 1.0
+        # Normalized anomaly strength: ~0.5 at the threshold, -> 1 for large errors.
+        confidence = float(score / (1.0 + score))
+    else:
+        disp_cond, disp_label = cond, _label(cond)
+        confidence = analysis["confidence"]
+    return {
+        "sample_id": sample_id,
+        "asset": asset,
+        "condition": disp_cond,
+        "label": disp_label,
+        "classifier_condition": cond,
+        "confidence": confidence,
+        "rpm": analysis["rpm"],
+        "rms": analysis["features"].get("rms"),
+        "probabilities": analysis["probabilities"],
+        "features": analysis["features"],
+        "sources": _sources(docs),
+        "model": llm.LLM_MODEL,
+        "anomaly": disp_cond != "normal",
+        "health": health,
+        **gen,
+    }
 
 
 def diagnose(
@@ -245,24 +379,18 @@ def diagnose(
     """Single-shot RAG + LLM diagnosis for a sample or signal."""
     sig, rpm, fs = _resolve_signal(sample_id, signal, rpm, fs)
     analysis = _analyze(sig, fs, rpm)
-    docs, _score = _retrieve(analysis["condition"])
-    gen = _generate(analysis["condition"], analysis["confidence"],
-                    analysis["features"], rpm, docs)
+    cond = analysis["condition"]
+    health = analysis["health"]
+    unclassified = cond == "normal" and bool(health and health.get("caught"))
 
-    diagnosis = {
-        "sample_id": sample_id,
-        "asset": asset,
-        "condition": analysis["condition"],
-        "label": _label(analysis["condition"]),
-        "confidence": analysis["confidence"],
-        "rpm": rpm,
-        "rms": analysis["features"].get("rms"),
-        "probabilities": analysis["probabilities"],
-        "features": analysis["features"],
-        "sources": _sources(docs),
-        "model": llm.LLM_MODEL,
-        **gen,
-    }
+    docs, _score = _retrieve(cond, unclassified)
+    gen = _generate(
+        cond, analysis["confidence"], analysis["features"], rpm, docs,
+        health=health, unclassified=unclassified,
+    )
+    diagnosis = _assemble_diagnosis(
+        sample_id, asset, analysis, docs, gen, health, unclassified
+    )
     if persist:
         diagnosis["id"] = _persist_diagnosis(diagnosis)
     return diagnosis
@@ -338,18 +466,40 @@ def run_agent(
 
     analysis = _analyze(sig, fs, rpm)
     cond, conf = analysis["condition"], analysis["confidence"]
+    health = analysis["health"]
     steps.append({
         "step": "analyze", "status": "ok",
         "detail": f"Classified {_label(cond)} ({conf:.0%}) over {analysis['n_windows']} windows",
     })
 
-    anomaly = cond != "normal"
+    # Unsupervised safety net: the health autoencoder flags anomalies the 4-class
+    # classifier can't name (e.g. one-off impacts).
+    if health is not None:
+        steps.append({
+            "step": "health_check", "status": "ok",
+            "detail": f"Reconstruction error {health['error']:.3f} / threshold "
+            f"{health['threshold']:.3f} - "
+            + ("anomaly" if health["caught"] else "within healthy range"),
+        })
+    else:
+        steps.append({
+            "step": "health_check", "status": "skipped",
+            "detail": "Health model not trained (run scripts/train_health.py)",
+        })
+
+    health_caught = bool(health and health.get("caught"))
+    unclassified = cond == "normal" and health_caught
+    anomaly = cond != "normal" or health_caught
     steps.append({
         "step": "anomaly_check", "status": "ok",
-        "detail": "Anomaly detected" if anomaly else "Healthy - no anomaly",
+        "detail": (
+            "Unclassified anomaly (health monitor)" if unclassified
+            else "Anomaly detected" if anomaly
+            else "Healthy - no anomaly"
+        ),
     })
 
-    docs, score = _retrieve(cond)
+    docs, score = _retrieve(cond, unclassified)
     steps.append({
         "step": "retrieve_kb",
         "status": "ok" if docs else "skipped",
@@ -360,7 +510,8 @@ def run_agent(
     trend = _trend(asset, analysis["features"].get("rms"), conf)
     steps.append({"step": "check_trend", "status": "ok", "detail": trend["summary"]})
 
-    gen = _generate(cond, conf, analysis["features"], rpm, docs)
+    gen = _generate(cond, conf, analysis["features"], rpm, docs,
+                    health=health, unclassified=unclassified)
     steps.append({
         "step": "generate_diagnosis",
         "status": "ok",
@@ -368,13 +519,9 @@ def run_agent(
         f"severity {gen['severity']}",
     })
 
-    diagnosis = {
-        "sample_id": sample_id, "asset": asset, "condition": cond,
-        "label": _label(cond), "confidence": conf, "rpm": rpm,
-        "rms": analysis["features"].get("rms"), "probabilities": analysis["probabilities"],
-        "features": analysis["features"], "sources": _sources(docs),
-        "model": llm.LLM_MODEL, **gen,
-    }
+    diagnosis = _assemble_diagnosis(
+        sample_id, asset, analysis, docs, gen, health, unclassified
+    )
     diagnosis["id"] = _persist_diagnosis(diagnosis)
 
     work_order = _make_work_order(diagnosis)

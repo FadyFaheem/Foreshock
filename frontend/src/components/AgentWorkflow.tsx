@@ -14,6 +14,7 @@ import type { AgentRun } from '../api/foreshock';
 const STEP_TITLES: Record<string, string> = {
   pull_signal: 'Pull signal',
   analyze: 'Analyze (features + classifier)',
+  health_check: 'Health monitor (anomaly detector)',
   anomaly_check: 'Anomaly check',
   retrieve_kb: 'Retrieve knowledge (RAG)',
   check_trend: 'Check health trend',
