@@ -19,6 +19,30 @@ spec:
         value: "2"
       - name: edns0
   restartPolicy: OnFailure
+  # Train the models on the very first pod boot (idempotent). This init container
+  # runs to completion before the app containers start: it downloads the CWRU
+  # subset and trains the classifier + health model into the repo's models/ dir,
+  # then exits. Once models exist it skips instantly, so real work only happens on
+  # the first boot. (With tools/cli/bootstrap.sh, host training runs first and this
+  # just finds the models and skips.)
+  initContainers:
+    - name: trainer
+      image: docker.io/python:3.11-slim
+      command: ["/bin/sh", "/app/scripts/first_boot_train.sh"]
+      env:
+        - name: PYTHONPATH
+          value: /app
+        # First boot trains the health model on NASA IMS run-to-failure data
+        # (~1 GB download, one-time). Set to "0" to skip (CWRU-derived fallback).
+        - name: USE_IMS
+          value: "1"
+      volumeMounts:
+        # Writable (no readOnly): training writes models/ and downloads into data/.
+        - name: project-root
+          mountPath: /app
+        - name: host-resolv
+          mountPath: /etc/resolv.conf
+          readOnly: true
   containers:
     # PostgreSQL + pgvector. infra/database is the init dir (schema on first start).
     - name: postgres-db

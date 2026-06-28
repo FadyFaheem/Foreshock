@@ -5,14 +5,13 @@
 #   tools/cli/bootstrap.sh [dev|prod]      (default: dev)
 #
 # Steps (each is idempotent / safe to re-run):
-#   1. Train the models on the host if models/ is empty (the pod mounts them RO).
-#   2. Pre-pull container images with visible progress (first run is ~5 GB).
-#   3. Start the Podman pod (--replace recreates containers, keeps PVC volumes).
+#   1. Pre-pull container images with visible progress (first run is ~5 GB).
+#   2. Start the Podman pod (--replace recreates containers, keeps PVC volumes).
+#   3. Wait for the first-boot trainer init container (it trains the models inside
+#      the pod on the first boot; a fast no-op once models exist).
 #   4. Wait for Postgres, then for Ollama to finish pulling its models
 #      (first run downloads ~1.3 GB), then for the API to answer /health.
 #   5. Seed the RAG knowledge base inside the API container.
-#
-# Env: SKIP_TRAIN=1 to skip step 1.
 
 set -uo pipefail
 
@@ -51,30 +50,12 @@ cd "$ROOT" || die "cannot cd to repo root"
 command -v podman >/dev/null 2>&1 || die "podman not found in PATH"
 podman info >/dev/null 2>&1 || die "podman not ready (on macOS: 'podman machine start')"
 
-PY="python3"
-[ -x ".venv/bin/python" ] && PY=".venv/bin/python"
-
 PG="${POD}-postgres-db"
 OLL="${POD}-ollama"
 API="${POD}-foreshock-api"
+TRAINER="${POD}-trainer"
 
-# --- 1) models ----------------------------------------------------------------
-if [ "${SKIP_TRAIN:-0}" = "1" ]; then
-  warn "SKIP_TRAIN=1 - not training models"
-elif [ ! -f models/model.joblib ] || [ ! -f models/samples.npz ]; then
-  log "Training the classifier (models/ missing) with $PY"
-  "$PY" scripts/download_data.py || die "download_data.py failed"
-  "$PY" scripts/train.py || die "train.py failed"
-  ok "Classifier trained."
-else
-  ok "Classifier model present."
-fi
-if [ "${SKIP_TRAIN:-0}" != "1" ] && [ ! -f models/health.npz ]; then
-  log "Training the v2 health model with $PY"
-  "$PY" scripts/train_health.py || warn "train_health.py failed (v2 Health tab will 503)"
-fi
-
-# --- 2) images ----------------------------------------------------------------
+# --- 1) images ----------------------------------------------------------------
 # Pre-pull with visible progress so the first run never looks "frozen": these
 # images total ~5 GB (the Ollama image alone is ~4 GB) and `podman play kube`
 # pulls them silently.
@@ -86,9 +67,21 @@ grep -E '^[[:space:]]*image:[[:space:]]' "$MANIFEST" | awk '{print $2}' | sort -
 done
 ok "Images ready."
 
-# --- 3) pod -------------------------------------------------------------------
+# --- 2) pod -------------------------------------------------------------------
 log "Starting the $ENV pod ($POD)"
 podman play kube --replace "$MANIFEST" || die "podman play kube failed"
+
+# --- 3) first-boot training ---------------------------------------------------
+# An init container (see the manifest) trains the models the first time the pod
+# boots, before the app containers start; a fast no-op once models exist. Wait for
+# it so the API never comes up model-less on a fresh host.
+if podman container exists "$TRAINER" 2>/dev/null; then
+  log "Waiting for first-boot model training (one-time: downloads data + trains)"
+  while podman ps --filter "name=$TRAINER" --filter "status=running" --format '{{.Names}}' 2>/dev/null | grep -q "$TRAINER"; do
+    printf '.'; sleep 3
+  done
+  ok "Training step finished."
+fi
 
 # --- 4a) Postgres -------------------------------------------------------------
 # Probe the always-present 'postgres' db: pg_isready reports *server* readiness,
