@@ -330,21 +330,24 @@ def _retrieve(
         return [], None
 
 
-# An "unclassified anomaly" = the classifier says normal, but the window is
-# genuinely impulsive - the signature of a one-off impact. ``kurtosis`` is excess
-# kurtosis (~0 for a clean signal), so this never false-positives on healthy data.
-# Keyed on impulsiveness ALONE on purpose: it must work even when the health
-# autoencoder is untrained/missing, and the classifier's confidence is meaningless
-# here (it cannot classify isolated impacts). The health monitor, when available,
-# is reported as extra evidence but is NOT required to raise the flag.
+# An "unclassified anomaly" = the classifier reports normal but the window is not
+# healthy. Two complementary signals: the CWRU-calibrated health autoencoder (whose
+# reconstruction error rises for *any* departure from healthy, including dense
+# impulse trains that keep kurtosis low) is the primary catch; impulsiveness (excess
+# kurtosis / crest) is the fallback for sparse impacts and when no health model is
+# trained. The classifier's confidence is ignored - it cannot classify arbitrary
+# impacts, so it is not evidence either way.
 _KURTOSIS_ANOMALY = 1.5
 _CREST_ANOMALY = 5.0
 
 
 def _is_unclassified_anomaly(analysis: dict[str, Any]) -> bool:
-    """True for a genuinely impulsive anomaly the classifier cannot name."""
+    """True for an anomaly the classifier reports as normal but cannot name."""
     if analysis["condition"] != "normal":
         return False
+    health = analysis.get("health")
+    if health and health.get("caught"):
+        return True  # calibrated health monitor: catches dense deviations too
     feat = analysis["features"]
     return (
         feat.get("kurtosis", 0.0) >= _KURTOSIS_ANOMALY
