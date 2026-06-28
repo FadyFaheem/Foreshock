@@ -151,26 +151,31 @@ def main() -> int:
     # data, not for IMS.
     print("Training the CWRU-calibrated scoring autoencoder ...")
     scoring_model, X, labels = _cwru_scorer()
+    # Save it FIRST. The anomaly net depends on this file, so it must persist even
+    # if the optional IMS timeline build below fails (e.g. a partial IMS download).
+    health.save(scoring_model, HEALTH_MODEL_PATH)
+    print(f"Saved CWRU-calibrated scoring model to {HEALTH_MODEL_PATH}")
 
+    # Run-to-failure timeline + embedding (display only). Prefer real IMS data; fall
+    # back to a CWRU-derived timeline on ANY IMS problem so it never blocks the save.
+    timeline = None
     ims_dir = ims_loader.available()
     if ims_dir is not None:
-        # Real IMS run-to-failure timeline + embedding for the Health tab. These use
-        # an IMS-calibrated model for a meaningful degradation curve, but that model
-        # is NOT saved - only the timeline + threshold it produces go into the npz.
-        timeline_model, ims_X, errors, phase, source = _build_ims(ims_dir)
-        embed_x, embed_y, embed_cond = _build_embedding(timeline_model, ims_X, phase)
-        threshold = float(timeline_model.threshold)
-    else:
-        print("No IMS data present - using a CWRU-derived timeline + embedding.")
-        source = "cwru"
+        try:
+            tmodel, ims_X, errors, phase, source = _build_ims(ims_dir)
+            ex, ey, ec = _build_embedding(tmodel, ims_X, phase)
+            timeline = (errors, phase, source, ex, ey, ec, float(tmodel.threshold))
+        except Exception as exc:  # noqa: BLE001
+            print(f"IMS timeline build failed ({exc}); using a CWRU timeline.")
+    if timeline is None:
+        print("Using a CWRU-derived timeline + embedding.")
         errors, phase = _cwru_timeline(scoring_model, X, labels)
-        embed_x, embed_y, embed_cond = _build_embedding(scoring_model, X, labels)
-        threshold = float(scoring_model.threshold)
+        ex, ey, ec = _build_embedding(scoring_model, X, labels)
+        timeline = (errors, phase, "cwru", ex, ey, ec, float(scoring_model.threshold))
 
+    errors, phase, source, ex, ey, ec, threshold = timeline
     smooth = _smooth(errors)
     alarm = _alarm_index(smooth, threshold)
-
-    health.save(scoring_model, HEALTH_MODEL_PATH)
     np.savez_compressed(
         HEALTH_DATA_PATH,
         timeline_error=errors.astype(np.float64),
@@ -178,12 +183,11 @@ def main() -> int:
         timeline_phase=phase,
         threshold=np.array(threshold),
         alarm_index=np.array(alarm),
-        embed_x=embed_x.astype(np.float64),
-        embed_y=embed_y.astype(np.float64),
-        embed_condition=embed_cond,
+        embed_x=ex.astype(np.float64),
+        embed_y=ey.astype(np.float64),
+        embed_condition=ec,
         source=np.array(source),
     )
-    print(f"Saved CWRU-calibrated scoring model to {HEALTH_MODEL_PATH}")
     print(
         f"Saved health timeline + embedding to {HEALTH_DATA_PATH} "
         f"(timeline source={source}, points={errors.shape[0]}, "

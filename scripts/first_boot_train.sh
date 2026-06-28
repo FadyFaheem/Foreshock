@@ -23,7 +23,7 @@ cd "$(CDPATH= cd "$(dirname "$0")/.." && pwd)" || exit 0
 need_clf=0
 need_health=0
 { [ -f models/model.joblib ] && [ -f models/samples.npz ]; } || need_clf=1
-[ -f models/health.npz ] || need_health=1
+{ [ -f models/health.npz ] && [ -f models/health_ae.joblib ]; } || need_health=1
 
 if [ "$need_clf" = 0 ] && [ "$need_health" = 0 ]; then
   echo "[trainer] models present - skipping training"
